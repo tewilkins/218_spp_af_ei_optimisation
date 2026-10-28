@@ -166,6 +166,9 @@ list2env(prepared_data, environment())
 # Site or reach
 sitecode_or_reach <- "LIS_453g"
 
+# Site coordinates
+site_coord <- 
+
 # Parameter combinations
 L_values <- c(5, 35)
 W_values <- c(100, 1000)
@@ -268,52 +271,95 @@ rasti$d2ol <- rasti$d2ol -
 # 4. Calculate weighted forest cover
 # ------------------------------------------------------------
 
-parameter_grid <- tidyr::crossing(
-  W = W_values,
-  L = L_values
+# parameter_grid <- tidyr::crossing(
+#   W = W_values,
+#   L = L_values
+# ) |>
+#   mutate(
+#     panel = case_when(
+#       L == 5  & W == 100  ~ "(a)",
+#       L == 35 & W == 100  ~ "(b)",
+#       L == 5  & W == 1000 ~ "(c)",
+#       L == 35 & W == 1000 ~ "(d)"
+#     ),
+#     panel = factor(
+#       panel,
+#       levels = c("(a)", "(b)", "(c)", "(d)")
+#     ),
+#     label = paste0(
+#       panel,
+#       "  L = ", L, " m, W = ", W, " m"
+#     )
+#   )
+
+# Define the four parameter combinations in the order you want them plotted
+parameter_grid <- data.frame(
+  L = c(Inf, Inf, 35, 35),
+  W = c(Inf, 1000, Inf, 1000)
 ) |>
-  mutate(
-    panel = case_when(
-      L == 5  & W == 100  ~ "(a)",
-      L == 35 & W == 100  ~ "(b)",
-      L == 5  & W == 1000 ~ "(c)",
-      L == 35 & W == 1000 ~ "(d)"
-    ),
-    panel = factor(
-      panel,
-      levels = c("(a)", "(b)", "(c)", "(d)")
-    ),
+  dplyr::mutate(
+    panel = c("(a)", "(b)", "(c)", "(d)"),
     label = paste0(
       panel,
       "  L = ", L, " m, W = ", W, " m"
     )
   )
 
+# plot_data <- purrr::pmap_dfr(
+#   parameter_grid,
+#   function(W, L, panel, label) {
+# 
+#     # Attenuation weights
+#     weight <- exp(
+#       log(0.5) * rasti$d2str / L
+#     ) * exp(
+#       log(0.5) * rasti$d2ol / W
+#     )
+# 
+#     # Weighted forest cover for 2022
+#     weighted_cover <- rasti[[7]] * weight
+# 
+#     df <- terra::as.data.frame(
+#       weighted_cover,
+#       xy = TRUE,
+#       na.rm = TRUE
+#     )
+# 
+#     names(df)[3] <- "weighted_cover"
+# 
+#     df$panel <- panel
+#     df$label <- label
+# 
+#     df
+#   }
+# )
+
 plot_data <- purrr::pmap_dfr(
   parameter_grid,
-  function(W, L, panel, label) {
-
-    # Attenuation weights
+  function(L, W, panel, label) {
+    
+    # Calculate attenuation weights
     weight <- exp(
       log(0.5) * rasti$d2str / L
     ) * exp(
       log(0.5) * rasti$d2ol / W
     )
-
-    # Weighted forest cover for 2022
+    
+    # Calculate weighted forest cover for 2022
     weighted_cover <- rasti[[7]] * weight
-
+    
+    # Convert to a data frame for ggplot
     df <- terra::as.data.frame(
       weighted_cover,
       xy = TRUE,
       na.rm = TRUE
     )
-
+    
     names(df)[3] <- "weighted_cover"
-
+    
     df$panel <- panel
     df$label <- label
-
+    
     df
   }
 )
@@ -322,12 +368,16 @@ plot_data <- purrr::pmap_dfr(
 # 5. Plot
 # ------------------------------------------------------------
 
+plot_data$weighted_cover_p <- plot_data$weighted_cover
+plot_data$weighted_cover_p <- plot_data$weighted_cover_p/25
+plot_data$weighted_cover_p[plot_data$weighted_cover_p > 1] <- 1
+
 p <- ggplot(
   plot_data,
   aes(
     x = x,
     y = y,
-    fill = weighted_cover
+    fill = weighted_cover_p
   )
 ) +
   geom_raster() +
@@ -338,10 +388,23 @@ p <- ggplot(
   coord_equal(
     expand = FALSE
   ) +
-  scale_fill_viridis_c(
-    option = "C",
-    name = "Weighted\nforest cover"
-  ) +
+  # scale_fill_viridis_c(
+  #   option = "D",
+  #   name = "Weighted\nforest cover"
+  # ) +
+  
+  # Adding a point at the site:
+  
+  
+  scale_fill_gradientn(
+    colours = c(
+      "grey",  
+      "darkgreen",  
+      # "green",  
+      "green2"  
+    ),
+    name = "Weighted\neffect"
+  ) + 
   labs(
     title = paste(
       "Attenuation-weighted forest cover:",
@@ -406,7 +469,6 @@ ggsave(
 
 
 ```
-
 
 ## Contours etc.
 
