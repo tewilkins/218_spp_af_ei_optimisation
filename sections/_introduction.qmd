@@ -1,0 +1,39 @@
+## Introduction
+
+<!--#  -->
+
+Protecting stream ecosystems from the deleterious effects of anthropogenic land use requires an understanding of the flow paths that connect different land cover types in the catchment to the stream. Most, if not all, of the human land use activities that degrade stream ecosystems are ultimately linked to loss of natural landscapes [@allan2004; @pusey2003]. The conversion of vegetated soils that intercept, infiltrate, and gradually release precipitation to hydrologically-efficient sealed surfaces resulting in urban streams that are characterised by high impervious cover and forest cover loss [@walsh2005]. Such surfaces generate stormwater runoff that is, in most modern cities, conveyed directly to streams via pipes [@walsh2005b]. In the absence of sealed stormwater drainage, the effects of land changes are modulated by the arrangement of impervious and deforested surfaces within the catchment, where changes closer to the stream have greater impact than those further away [@king2005; @vansickle2008].
+
+<!--# Importance of corridor width and upstream influence -->
+
+Practical management of stream ecosystems requires actionable buffer widths that protect in-stream biota from land use activities, such as overland distance to the stream reach [@boon2024], or upland distance along the streamline [@wang2001]. However, such approaches neglect the influence of spatial arrangement and heterogeneity of land cover predictors. Furthermore, several studies have noted that a clearly defined riparian boundary, after which the catchment has no influence, is unlikely to reflect realistic flow path hydrology [@king2005; @vansickle2008; @peterson2011].
+
+<!--# Why is distance-weighting important? -->
+
+Past studies have demonstrated that weighting land-cover influence by overland to-stream distance with an exponential decay function improves prediction of in-stream ecological responses over lumped/unweighted [@vansickle2008; @peterson2011], linear, and threshold [@walsh&webb2014] distance-decay functions. @walsh&webb2014 demonstrated the optimal weighting function for predicting macroinvertebrate assemblage responses to forest cover was derived from exponentially-weighted in-stream and overland distances, applied to mapped forest cover gridcells in each stream catchment. @walsh2009 found that attenuating influence from the most downslope patch of impervious surfaces without piped drainage improved prediction of macroinvertebrate assemblages, while direct drainage lines to streams (i.e., road pipes, sealed channels) did not decay in influence over any distance.
+
+### Importance of small stream mapping
+
+<!--# How important are headwaters? -->
+
+A major consequence of urbanisation is extensive loss of natural headwaters (defined henceforth as 1st- and 2nd-order streams [@strahler], as per @meyer2007 & @downing2012) that are dominant across riverine networks, accounting for approximately 60-80% of total stream reach length [@downing2012]. In the absence of human land use impacts, small streams are typically densely vegetated and often flow intermittently [@wohl2017]. Despite their importance and prevalence, small streams are frequently channelised to accommodate urban growth [@elmore2008; @roy2009]. Flashy flows resulting from direct stormwater drainage disrupt natural intermittence patterns in headwater streams, which have cascading influence on downstream habitats and invertebrate communities [@lancaster2008; @wohl2017; @white2018]. The influence of headwater streams at the catchment-scale is often under-appreciated due to poor understanding of ecological stressors specific to small streams [@walsh2005; @imberger2023; @wohl2017].
+
+### Biological endpoints
+
+<!--# Why macroinvertebrates? -->
+
+<!--# Come back to this para - see comments. -->
+
+In-stream macroinvertebrates are diverse and highly abundant in all stream ecosystem types. Their presences and abundances are closely associated with proximal changes to their environment, and are frequently measured for the calculation of biotic summary indices to inform water management (e.g., Stream Invertebrate Grade Number Average Level [SIGNAL, in @chessman1995], and Percentage Epheroptera, Plecoptera and Trichoptera [EPT, in @crawford1989effects; @wallace1996]). SIGNAL has been shown to perform comparatively well as a biotic measure of ecological health [@cox2019; @chessman2021], and past studies have developed methods to quantify land use effects on stream ecosystems using SIGNAL score as an ecological endpoint [e.g., @walsh2009; @walsh&webb2014; @burns2015].
+
+In recent years, the emergence of multi-taxon models with a Joint Species Distribution Model (JSDM) extends traditional species distribution models (SDMs) by accounting for interspecies dependencies and shared environmental responses [@ovaskainen2011; @pollock2014; @wilkinson2019]. JSDMs simultaneously model the occurrences of multiple taxa across environmental gradients, as well as generating data-driven estimates of latent variables [@ovaskainen2016]. In contrast, SIGNAL approximates stream ecosystem disturbance by correlating macroinvertebrate observed abundances and prior knowledge of their sensitivities to water quality declines [@chessman1995]. In this study, we used modified JSDM models to improve catchment-scale distance-weighted predictor variables, with comparisons to SIGNAL score models used in past studies.
+
+### Research aims and questions
+
+In this study, we aim to review the predictive performance of distance-weighted predictors for modelling in-stream macroinvertebrate occurrences, using a JSDM model structure and extended stream mapping. Additionally, we reviewed the performance of two land-use predictors that have previously been optimised to predict SIGNAL score across Greater Melbourne/Naarm: (1), effective impervious cover (EI), first optimised by @walsh2009, and attenuated forest cover (AF), originally optimised by @walsh&webb2014. Here we use a more accurate and higher-resolution stream network map [@walsh_mwstr2023], which includes headwaters and small streams that were under-represented in the previous studies. We also revised the original model specification used by @walsh2009 and @walsh&webb2014 to incorporate a JSDM structure. In order to review the original weightings and determine the influence of extended spatial mapping data and JSDMs, we proposed the following research questions:
+
+1.  Does higher-resolution stream mapping influence the performance of univariate models fitted with SIGNAL score and JSDM models fitted with taxon presence/absences? (i.e. can new stream maps explain differences in inference between this study and earlier work which modelled SIGNAL)
+
+2.  Does inference of attenuation lengths differ between models using SIGNAL and multi-taxon models?
+
+We addressed the first question by comparing SIGNAL score models fitted with and without extended stream mapping. This comparison was addressed by evaluating the performance of models fitted with SIGNAL score against those fitted with multi-taxon macroinvertebrate occurrences, to determine whether incorporating taxon-specific responses improves predictive performance. The second question was addressed by re-estimating the optimal in-stream and overland half-decay distances for forest and impervious cover using the extended stream network and JSDM framework, and comparing these estimates to those from previous studies to assess how spatial scales of up-slope influences shift with model structure and broader spatial coverage.

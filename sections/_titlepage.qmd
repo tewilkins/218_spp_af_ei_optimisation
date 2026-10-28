@@ -1,0 +1,31 @@
+
+**Authors**
+
+Thomas E. Wilkins^1\*^, Christopher J. Walsh^1^, Yung En Chee^1^, Melissa E. Carew^1,2^
+
+**Affiliations**
+
+^1^ Waterway Ecosystem Research Group, School of Agriculture, Food and Ecosystem Sciences, The University of Melbourne, Burnley, 3121, Victoria, Australia.
+
+^2^ Pest and Environmental Adaptation Research Group, School of BioSciences, Bio21 Institute, 30 Flemington Rd, The University of Melbourne, 3010, Victoria, Australia.
+
+**Corresponding author**
+
+Thomas E. Wilkins
+[tom.wilkins\@unimelb.edu.au](tom.wilkins@unimelb.edu.au)
+ORCID: 0000-0003-0936-8939
+
+**Open Research Statement**
+
+<Check version before finalisation>
+
+Data used in this study were extracted from the Melbourne Water Macroinvertebrate Database (Version 2.1.1, available at <https://tools.thewerg.unimelb.edu.au/mwbugs/data/mwbugs_db_v2.1.1.gpkg>) and the Melbourne Water Stream Network Database (Version 1.3.1, available at <https://tools.thewerg.unimelb.edu.au/mwstr/data/mwstr_v1.3.1.gpkg>). All code and documentation relating to the manuscript is stored in a github repository available at <https://github.com/tewilkins/bulk_processing_experiment_modelling>.
+
+**Keywords**
+
+forest cover, imperviousness, spatial arrangement, macroinvertebrates, metabarcoding, hyperparameter tuning
+
+**Ethics Statement**
+
+All sampling was conducted in accordance with relevant Australian legislation and regulations governing the collection of freshwater macroinvertebrates. Samples were collected under the relevant permits issued by [Parks Victoria; AA-0241308]. Sampling procedures were designed to minimise impacts on organisms and their habitats. No animals were experimentally handled or subjected to procedures requiring animal ethics approval.
+

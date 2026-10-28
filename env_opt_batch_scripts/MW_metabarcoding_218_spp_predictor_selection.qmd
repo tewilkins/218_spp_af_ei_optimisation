@@ -1,0 +1,227 @@
+---
+title: "Selection of optimal predictor set using the 196-species model"
+author: "Christopher J Walsh"
+format: docx
+editor: source
+bibliography: references.bib
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+#| label: setup
+#| echo: false
+
+source("quick_218_spp_data_assembly_for_ou_model.R")
+# This creates data ready for the model for constrained_z
+source("cmdstanr_functions.R")
+# post processing functions
+
+# Core predictors
+u_core <- c("I","F","Q","Q2","C","T")   # and "riff","season" in u_obs, which will remain unchanged
+u_opts <- c("T2","D","B","L")
+u_int_opts <- c("F_I","Q_F","Q_I","F_I_Q")  # and maybe (if B or D are important, Q_D and B_I)
+
+# so pred combinations to trial are:
+pred_set <- list(u_core, c(u_core, "T2"), c(u_core, "D"), c(u_core, "B"), c(u_core, "L"), 
+                  c(u_core, "T2","D"), c(u_core, "T2","B"), c(u_core, "T2","L"), 
+                  c(u_core, "D","B"), c(u_core, "D","L"), c(u_core, "B","L"), 
+                  c(u_core, "T2","D","B"), c(u_core, "T2","D","L"), c(u_core, "T2","B","L"), 
+                  c(u_core, "D","B","L"))
+
+names(pred_set) <- c("ifqct", "ifqct2", "ifqctd", "ifqctb", "ifqctl", 
+                     "ifqct2d", "ifqct2b", "ifqct2l",
+                     "ifqctdb", "ifqctdl", "ifqctbl", 
+                     "ifqct2db", "ifqct2dl", "ifqct2bl", "ifqctdbl")
+
+```
+
+The run_218spp_model() function (loaded in "quick_218_spp_data_assembly_for_latent_tests.R") runs the specified 218-species model and creates a list of objects for post-processing ("species_set", "sample_set", "pred_set", "data", "fit", "diagnostics", "summary", "loo", "diag_summary).
+
+```{r}
+#| eval: false
+
+run_218spp_model(pred_site = pred_site,
+                n_iterations = 1200, n_chains = 4,
+                mod_code = "ifq2cdt2blrs_qd_fi_qf_qi_fiq",
+                mod_path = "stancode/jointspp_pa_no_eps_ou.stan", 
+                compile_summary = TRUE,  compile_loo = TRUE)  
+# The full model was used first to validate that all was in order
+
+```
+
+```{r}
+#| label: u_sets
+#| eval: false
+
+# Core predictors
+u_core <- c("I","F","Q","Q2","C","T")   # and "riff","season" in u_obs, which will remain unchanged
+u_opts <- c("D","B","L")
+u_int_opts <- c("F_I","Q_F","Q_I")  # and maybe (if B or D are important, Q_D and B_I)
+
+# so pred combinations to trial are:
+pred_set <- list(u_core, c(u_core, "D"), c(u_core, "B"), c(u_core, "L"), 
+                  c(u_core, "D","B"), c(u_core, "D","L"), c(u_core, "B","L"), 
+                  c(u_core, "D","B","L"))
+
+names(pred_set) <- c("ifqct", "ifqctd", "ifqctb", "ifqctl", 
+                     "ifqctdb", "ifqctdl", "ifqctbl", "ifqctdbl")
+
+for(i in 1:length(pred_set)){
+run_218spp_model(pred_site = pred_set[[i]],
+                 mod_code = names(pred_set)[i],
+                 mod_path = "stancode/jointspp_pa_no_eps_ou.stan", 
+                 calc_summary = FALSE, calc_loo = TRUE)  
+  gc()
+}
+```
+
+To reduce the load on RAM on the 64 Gb Linux server, I implemented the above loop via a bash command. To do this, I created the R script "batch_218_model_select.R" via a bash script containing the following:
+
+``` bash
+
+#!/bin/bas
+models=("ifqct" "ifqct2" "ifqctd" "ifqctb" "ifqctl" "ifqct2d" "ifqct2b" "ifqct2l" "ifqctdb" "ifqctdl" "ifqctbl" "ifqct2db" "ifqct2dl" "ifqct2bl" "ifqctdbl")
+
+# Loop through each model code and run it in a fresh R session
+for model in "${models[@]}"
+do
+echo "========================================="
+echo "Starting batch job for: $model"
+echo "========================================="
+
+# Run the R script and pass the current model name as an argument
+Rscript batch_218spp_mod_select.R "$model"
+
+echo "Finished: $model. RAM cleared by Linux OS."
+echo ""
+done
+
+echo "All Stan models have successfully finished processing!"
+```
+
+In a bash terminal, I made the .sh script executable and set it running as follows:
+
+``` bash
+
+chmod +x run_218_models_1.sh
+nohup bash ./run_218_models_1.sh > model_output.log 2>&1 &
+```
+
+Keeping track of its progress with the command
+
+``` bash
+
+tail -n 50 model_output.log
+```
+
+With all models run, a preliminary model comparison can be made (pending re-calculating LOO-IC with model matching on a machine with more memory), noting that these LOO-IC were calculated using only the fixed predictors in the model.
+
+```{r}
+
+mod_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial2_218spp_models/"
+mod_codes <- dir(mod_dir)
+
+mod_loos <- data.frame(mod_code = mod_codes, tab_code = mod_codes,
+                       loo_name = paste0("mod_loo_", mod_codes))
+
+# loo_list <- list()
+# for(i in which(!mod_loos$mod_code %in% names(loo_list))) { #1:nrow(mod_loos)) {
+#   loo_list <- c(loo_list, list(load_model_component_bundle(mod_code = mod_codes[i], mod_dir = mod_dir)$loo))
+#   names(loo_list)[length(loo_list)] <- mod_loos$mod_code[i]
+# }
+# names(loo_list) <- mod_loos$tab_code
+# save(loo_list, file = "~/uomShare/wergStaff/ChrisW/temp/loo_list_pred_sel.rda")
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_pred_sel.rda")
+
+n_way_comparison <- loo::loo_compare(loo_list) # [names(loo_list) %in% names(pred_set)])   # restrict to first set
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+
+tab1 <- n_way_comparison[1:3]
+tab1$elpd_diff_by_se <- -tab1$elpd_diff/tab1$se_diff
+tab1[2:4] <- round(tab1[2:4],1)
+flextable::flextable(tab1)
+```
+
+Until I have access to a server with enough memory to calculate LOO-IC with moment matching, these results (with a small number of bad Pareto ks) must be treated with caution: we can only confidently infer superiority if elpd_diff_by_se is \> 4 or 5). Thus we can infer:
+
+-   the model with all fixed predictors and three interactions is superior to any of the models without interactions
+
+-   addition of the Lowness predictor consistently improved models. This variable should definitely be included in the final model.
+
+-   there is no evidence that addition of either D (degree of regulation) or B (basalt geology) improved the model.
+
+Thus for the next tranche of models for comparison, I will use ifqctl as the base model and add combinations of interactions as follows:
+
+```{r}
+
+base_core <- c(u_core, "T2","D","L")
+# so pred combinations to trial are:
+pred_set <- list(c(base_core, "F_I"), 
+                 c(base_core, "Q_F"), c(base_core, "Q_I"), 
+                 c(base_core, "F_I","Q_F"), c(base_core, "Q_F","Q_I"),
+                 c(base_core, "F_I","Q_I"),
+                 c(base_core, "F_I","Q_F","Q_I"))
+
+names(pred_set) <- c("ifqct2dl_fi","ifqct2dl_qf","ifqct2dl_qi","ifqct2dl_fi_qf",
+                     "ifqct2dl_qf_qi","ifqct2dl_fi_qi","ifqct2dl_fi_qf_qi")
+
+new_base_core <-c(base_core, "F_I","Q_F","Q_I")
+
+pred_set_2 <- list(c(new_base_core, "Q_D"), c(new_base_core, "F_I_Q"),
+                   c(new_base_core, "Q_D","F_I_Q"),c(u_core, "T2","D","L","F_I","Q_F","Q_I","F_I_Q"))
+names(pred_set_2) <- c("ifqct2dl_fi_qf_qi_qd","ifqct2dl_fi_qf_qi_fiq",
+                       "ifqct2dl_fi_qf_qi_qd_fiq","ifqct2l_fi_qf_qi_qd_fiq")
+
+pred_set <- c(pred_set, pred_set_2)
+
+
+```
+
+A comparison of these to the full model will be a good test of whether either B or D are important contributors in the presence of interactions. I put the final combination in to make it an even 8 for 2 parallel processes, but also to test if D in the absence of B improves the model. (From an application perspective, D could be a useful indicator of management effects)
+
+```{r}
+
+mod_loos <- rbind(mod_loos, 
+                  data.frame(mod_code = names(pred_set), tab_code = names(pred_set),
+                       loo_name = paste0("mod_loo_", names(pred_set))))
+
+n_way_comparison <- loo::loo_compare(loo_list)
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+
+tab1 <- n_way_comparison[1:3]
+tab1$elpd_diff_by_se <- -tab1$elpd_diff/tab1$se_diff
+tab1[2:4] <- round(tab1[2:4],1)
+flextable::flextable(tab1[grep("l", tab1$model),])
+
+```
+
+If we were to adhere to the law of parsimony ifqctl_fi_qf_qi_fiq is the clear winner of this set of candidate models. The addition of the three-way interaction between I, F and Q improved the model by enough to be defensible, even without moment-matched LOO-IC scores.
+
+The addition of D and Q_D to that model does not significantly worsen the model (given the preliminary caveat). Given the management interest in D as a predictor that can be manipulated, it would be desirable to leave it in the model if any species respond to these parameters.
+
+I think for now, I will proceed with AF and EI optimization using ifqctl_fi_qf_qi_fiq, but will run both that model and ifqctld_fi_qf_qi_qd_fiq with the final full-species set, and compare them with the full set.
+
+And a final comparison of the top models after optimising AF and EI
+
+```{r}
+
+mod_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial_196spp_models/"
+ifqctl_fi_qf_qi_fiq_old_loo <- load_model_component_bundle(mod_code = "ifqctld_fi_qf_qi_qd_fiq", mod_dir = mod_dir)$loo
+mod_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/af_opt_ei_l2sw40_196_spp_ifqctl_fi_qf_qi_fiq/"
+ifqctl_fi_qf_qi_fiq_loo <- load_model_component_bundle(mod_code = "af_l4w600", mod_dir = mod_dir)$loo
+mod_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial_196_models_e1l2sw40_afl4w600/"
+ifqctld_fi_qf_qi_qd_fiq_loo <- load_model_component_bundle(mod_code = "ifqctld_fi_qf_qi_qd_fiq", mod_dir = mod_dir)$loo
+ifqctld_fi_qf_qi_qd_loo <- load_model_component_bundle(mod_code = "ifqctld_fi_qf_qi_qd", mod_dir = mod_dir)$loo
+ifqctl_fi_qi_loo <- load_model_component_bundle(mod_code = "ifqctl_fi_qi", mod_dir = mod_dir)$loo
+
+loo_list <- list(ifqctl_fi_qf_qi_fiq_old = ifqctl_fi_qf_qi_fiq_old_loo,
+                 ifqctl_fi_qf_qi_fiq = ifqctl_fi_qf_qi_fiq_loo, 
+                 ifqctld_fi_qf_qi_qd_fiq = ifqctld_fi_qf_qi_qd_fiq_loo,
+                 ifqctld_fi_qf_qi_qd = ifqctld_fi_qf_qi_qd_loo,
+                 ifqctl_fi_qi = ifqctl_fi_qi_loo)
+n_way_comparison <- loo::loo_compare(loo_list)   # restrict to first set
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+n_way_comparison$diff_by_se <- n_way_comparison$elpd_diff/n_way_comparison$se_diff
+
+```

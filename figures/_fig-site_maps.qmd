@@ -1,0 +1,101 @@
+```{r}
+#| label: fig-site_maps
+#| eval: true
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 8
+#| fig-cap: "Maps of the 132 sampling sites across Naarm/Grater Melbourne and their corresponding environmental descriptors. Light blue lines indicate sampleable stream reaches, black lines indicate coastline. Panel A shows proportional total catchment forest cover derived from Nearmap AI 2022 mapping data; darker shades of green denote higher cover. Panel B shows proportional total catchment imperviousness derived from Nearmap AI 2022 mapping data; darker shades of grey denote greater imperviousness. Panel C. Annual mean daily temperature (°C) for the 30-year period 1993-2022 (inclusive); lower temperatures are denoted by yellow, grading to higher temperatures denonted by red. Panel D shows mean annual discharge depth (mm) from 1911-2022; darker shades of blue denote higher discharge depth."
+
+# ssh -L 5432:localhost:5432 -C -N -l  tewilkins 172.26.150.60
+
+mwbugs <- RPostgres::dbConnect(RPostgres::Postgres(), "mwbugs", host = "localhost", port = 5432, user = "readonly", password = "reachcode_42")
+mwstr <- RPostgres::dbConnect(RPostgres::Postgres(), "mwstr", host = "localhost", port = 5432, user = "readonly", password = "reachcode_42")
+# load_all_mwbugs_tables(db_mwbugs)
+
+
+
+# Read spatial data for mapping:
+streams <- sf::st_read(mwstr, query = "SELECT * FROM streams WHERE sampleable = 1;")
+coast <- sf::st_read(mwstr, query = "SELECT * FROM coast;")
+
+model_data <- rio::import_list("~/uomShare/wergStaff/tewilkins/git-data/env_optimisation/data/biota_sampprs_for_optimisation.xlsx")
+# list2env(model_data, globalenv())
+sampprs <- model_data$sampprs
+biota <- model_data$biota
+
+sites <- sf::st_read(mwbugs, query = paste0("SELECT * FROM sites WHERE sitecode IN ('",
+                              paste(unique(sampprs$sitecode), collapse = "','"), "');"))
+
+cat_env <- DBI::dbGetQuery(mwstr,paste0("SELECT *, subcs.carea_km2 FROM cat_env ",
+                                         "JOIN subcs ON cat_env.site = subcs.site ",
+                                         "WHERE cat_env.reach IN ('",
+                                         paste(sites$reach_v12, collapse = "', '"), "');"))
+subc_env <- DBI::dbGetQuery(mwstr,paste0("SELECT * FROM subc_env WHERE reach IN ('",
+                                         paste(sites$reach_v12, collapse = "', '"), "');"))
+
+sites$tf <- cat_env$tf_2022[match(sites$reach_v12, cat_env$reach)]
+sites$ti <- cat_env$ti_2022[match(sites$reach_v12, cat_env$reach)]
+sites$tc <- subc_env$meant_y30_2022[match(sites$reach_v12, subc_env$reach)]
+sites$meanq_mm <- cat_env$meanq_mm[match(sites$reach_v12, cat_env$reach)]
+
+stream_data_wgs84 <- st_transform(streams$geom, crs = 4326)
+coast_data_wgs84 <- st_transform(coast$geom, crs = 4326)
+stream_coord <- st_coordinates(stream_data_wgs84)
+site_points <- data.frame(X = sampprs$coord_X, 
+                          Y = sampprs$coord_Y,
+                          dupe = as.integer(duplicated(sampprs$coord_X)))
+
+lo <- lo <- layout(matrix(1:4, ncol = 2, byrow = T), widths = c(4,4), heights = c(4,4))
+
+# Plot settings:
+stream_col <- "lightblue1"
+stream_lwd <- 1
+
+coast_col <- "black"
+coast_lwd <- 1
+
+tf_seq <- ceiling(sites$tf*5)
+tf_col <- RColorBrewer::brewer.pal(5,"Greens")[tf_seq]
+
+ti_seq <- as.numeric(cut(sites$ti, breaks = c(0, 0.01, 0.02, 0.05, 0.2, 0.4)))
+ti_col <- RColorBrewer::brewer.pal(5,"Greys")[ti_seq]
+
+tc_seq <- as.numeric(cut(sites$tc, breaks = c(11, 12, 13, 14, 15, 16)))
+tc_col <- RColorBrewer::brewer.pal(5,"YlOrRd")[tc_seq]
+
+mq_seq <- as.numeric(cut(sites$meanq_mm, breaks = c(10, 100, 200, 300, 500, 1000)))
+mq_col <- RColorBrewer::brewer.pal(5,"Blues")[mq_seq]
+
+
+# Plots:
+par(mar = c(0,0,0,0))
+plot(streams$geom, col = stream_col, lwd = stream_lwd)
+plot(coast$geom, col = coast_col, lwd = coast_lwd, add = TRUE)
+plot(sites$geom, bg = tf_col, pch = 21, cex = 1.5, add = TRUE)
+legend("topright",title= "Total forest cover ",pch=21,pt.bg=RColorBrewer::brewer.pal(5,"Greens"), legend =c("0-0.2", "0.2-0.4","0.4-0.6", "0.6-0.8", "0.8-1"), cex = 1)
+title(main = "A.",adj = 0.05, line = -1, font = 1)
+
+plot(streams$geom, col = stream_col, lwd = stream_lwd)
+plot(coast$geom, col = coast_col, lwd = coast_lwd, add = TRUE)
+plot(sites$geom, bg = ti_col, pch = 21, cex = 1.5, add = TRUE)
+legend("topright",title= "Total impervious cover",pch=21,pt.bg=RColorBrewer::brewer.pal(5,"Greys"),
+       legend = c("0-0.01", "0.01-0.02", "0.02-0.05", "0.05-0.2", ">0.2"), cex = 1)
+title(main = "B.",adj = 0.05, line = -1, font = 1)
+
+plot(streams$geom, col = stream_col, lwd = stream_lwd)
+plot(coast$geom, col = coast_col, lwd = coast_lwd, add = TRUE)
+plot(sites$geom, bg = tc_col, pch = 21, cex = 1.5, add = TRUE)
+legend("topright",title= "Temperature C",pch=21,pt.bg=RColorBrewer::brewer.pal(5,"YlOrRd"),
+       legend = c("11-12", "12-13", "13-14", "14-15", ">15"), cex = 1)
+title(main = "C.",adj = 0.05, line = -1, font = 1)
+
+
+plot(streams$geom, col = stream_col, lwd = stream_lwd)
+plot(coast$geom, col = coast_col, lwd = coast_lwd, add = TRUE)
+plot(sites$geom, bg = mq_col, pch = 21, cex = 1.5, add = TRUE)
+legend("topright",title= "meanQ (mm/y)",pch=21,pt.bg=RColorBrewer::brewer.pal(5,"Blues"),
+       legend = c("0-100","100-200","200-300","300-500",">500"), cex = 1)
+title(main = "D.",adj = 0.05, line = -1, font = 1)
+```

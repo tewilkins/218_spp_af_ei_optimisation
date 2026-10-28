@@ -1,0 +1,52 @@
+---
+title: "High-resolution mapping and multi-taxon modelling improves the distance-weighting of land use gradients for predicting in-stream macroinvertebrate communities."
+format:
+  docx:
+    reference-doc: ../templates/ea-template.docx
+editor: visual
+bibliography: ../references.bib
+csl: ../csl/ecology.csl
+link-citations: true
+citecolor: default
+---
+
+```{r}
+#| label: setup
+#| eval: true
+#| echo: false
+#| warning: false
+#| error: false
+#| output: false
+
+source("functions/setup.R") 
+# source("https://tools.thewerg.unimelb.edu.au/data/mwstr_v13/mwstr_network_functions.R")
+source("https://raw.githubusercontent.com/tewilkins/mwbugs_functions/refs/heads/main/mwbugs_functions.R")
+
+options(scipen=999)
+requiredPackages <- c("readxl","tidyverse", "scales", "flextable", "rio", "rstan", "geosphere", "pROC",
+                     "ggplot2", "officer", "officedown", "spdep", "ggspatial")
+load_packages(requiredPackages) # load_packages() is a custom function to load packages and install them if not already installed
+
+```
+
+{{< include sections/_abstract.qmd >}}
+
+{{< include sections/_introduction.qmd >}}
+
+{{< include sections/_methods.qmd >}}
+
+{{< include sections/_results.qmd >}}
+
+{{< include sections/_discussion.qmd >}}
+
+{{< include sections/_backmatter.qmd}}
+
+## 6. Acknowledgements
+
+## 7. Author Contributions
+
+## 8. Tables
+
+## 9. Figures
+
+## 10. References

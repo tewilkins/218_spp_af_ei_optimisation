@@ -1,0 +1,563 @@
+---
+title: "Identification of false positives in metabarcoding data"
+author: "Christopher J Walsh"
+format: docx
+editor: source
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+#| label: setup
+#| echo: false
+
+source("fp_assessment_881_spp_data_assembly.R")
+taxon_seq <- DBI::dbGetQuery(mwbugs, "SELECT asv_code, lowest_taxon FROM taxon_seq WHERE taxon_level = 'species' AND aq_macro = 1;")
+# Use first model
+mod_code <- "mod_881spp_500_env"
+mod_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/full_881spp_models/"
+mod_bundle <- readRDS(paste0(mod_dir, mod_code,"/",mod_code,"model_bundle.rds"))
+mod_data <- mod_bundle$data
+# Plot data compiled in MW_metabarcoding_881_spp_500.qmd
+load("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/model1_latent_factor_means.rda")
+rich_oe <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/model1_richness_oe.rds")
+load("~/uomShare/wergStaff/ChrisW/temp/auc_tab_881spp_500.rda")
+y_rep_env_array_raw <- readRDS(paste0(mod_dir, mod_code,"/","y_rep_env_array_raw.rds"))
+dim(y_rep_env_array_raw) <- c(2000, 274, 881)
+runs <- c(13,15:20,22)
+
+```
+
+## Summary
+
+Following the construction of an initial species-distribution model using metabarcoding data from bulk macroinvertebrate samples from streams of the Melbourne region, systematic differences among the 8 laboratory runs became evident. Two runs had many more false positives than any of the others suggesting higher than average degrees of cross-contamination, and two runs had many more false negatives than the others, suggesting a lower rate of species detection.
+
+This document details the detection of the systematic differences, and the inference of false positives and false negatives. The model was substantially improved by including a categorical "method" variable that will model the systematic biases between runs. While the resulting model provides useful predictions of species distributions for a given level of run-specific bias, the unexplained differences between runs, and the large amount of data screening and analysis required to use the data, suggest this method is currently unsuitable for routine monitoring.
+
+## Introduction
+
+Determining species occurrence in bulk stream macroinvertebrate samples by metabarcoding analysis can result in false negatives (missed species present in the sample) as a result of factors like primer bias, low concentration of DNA or inadequate sequencing depth and false positives (species not present in the data) as a result of factors like cross-contamination, tag switching, and sequencing and PCR errors. The rates of each of these error types is study-dependent. Due to the high sensitivity of metabarcoding, in some cases, sequences will be found in control samples. Understanding the likely source of these reads can help develop strategies to filter data and reduce possible impact on biodiversity assessment.
+
+## Methods
+
+### Study design and sample collection and processing
+
+This assessment of false positives in metabarcoding data of bulk-processed stream macroinvertebrate samples in the Melbourne region was conducted after initial modelling of species distributions. The metabarcoding data for modelling was processed in 8 separate MiSeq runs, each including negative controls (which contain no ASVs) and spike controls (which contain large concentrations of 1-3 sequences—in this study, of *Scaptodrosophila xanthorrhoea*, which are highly unlikely to be present in the macroinvertebrate samples).
+
+The data used for the initial joint-species distribution model was minimally filtered by excluding:
+
+-   sequences that comprise \<0.0001% of all reads in a run (there a no records with just 1 read);
+
+-   records with consensus \<0.7 with ASVs in reference libraries.
+
+-   non-aquatic-macroinvertebrate species (aq_macro = 0 in the mwbugs database).
+
+Exploratory analyses showed that standard methods of filtering for false positives by minimum count thresholds or minimum number of PCR replicates removed many more true positives than possible false positives. Assessment of the null and spike controls of the 7 MiSeq runs used in this study suggested a likely very low rate of false positives and a small number of likely mis-taggings resulting from highly abundant sequence in each run.
+
+source of bug data, including phylogenetic matrix.
+
+### Joint species distribution model without accounting for inter-run differences
+
+We developed a hierarchical joint species distribution model (JSDM) using a logistic link function to model probability of occurrence of each of 881 species ($n_{taxa} = 875$) in the 275 samples ($n_{obs} = 275$) from 223 sites ($n_{site} = 223$). The model incorporated fixed environmental predictors, phylogenetic correlation, species-specific intercepts, and a 2-dimensional latent factor ordination to account for unmeasured site-level residual variation and species co-occurrence patterns (Pollock et al., 2014; Ovaskainen et al., 2017).
+
+We modelled the probability of occurrence $p_{i, j}$ for species $j$ in sample $i$ as:
+
+$$ 
+y_{i, j} \sim \mathrm{Bernoulli}(\mathrm{inv\_logit}(\mu_{i, j})) 
+$$
+
+The linear predictor $\mu_{i, j}$ is a function of site-level predictors ($\mathbf{U}_{\mathrm{site}}$) and sample-level fixed predictors ($\mathbf{U}_{\mathrm{obs}}$) and the site-level 2-dimensional latent factor matrix ($\mathbf{Z}_{\mathrm{exp}[i]}$), expanded to match the 275-row sample matrix:
+
+$$
+\mu_{i, j} = \alpha_j + \mathbf{U}_{\mathrm{site}[i]} \mathbf{\beta}_{\mathrm{site}, j} + \mathbf{U}_{\mathrm{obs}[i]} \mathbf{\beta}_{\mathrm{obs}, j} + \mathbf{Z}_{\mathrm{exp}[i]} \mathbf{\lambda}_{j}^T
+$$
+
+where $\alpha_j$ is the global intercept for species $j$, modeled hierarchically as $\alpha_j \sim \mathrm{Normal}(\mu_{\alpha}, \sigma_{\alpha})$ to prevent unrealistic estimates for rare species by drawing them toward the assemblage mean.
+
+To ensure compatibility between the latent factor ordination of sites and environmental predictors, the fixed predictors were split into two matrices:
+
+1.  $\mathbf{u}_{\mathrm{site}}$: A $[223 \times 12}]$ matrix of site-specific variables (*cw_note: definitive list to be finalized after model selection...change second dimension in matrix description when done*)
+
+2.  $\mathbf{u}_{\mathrm{obs}}$: A $[275 \times 2]$ matrix of sample-specific variables (riff and season *cw_note expand if variables not defined before this point*).
+
+Response slopes for all species ($\mathbf{\beta}_{\mathrm{site}}$ and $\mathbf{\beta}_{\mathrm{obs}}$) were modeled hierarchically using a matrix-normal prior. Each species slope was treated as a deviation around a shared global assemblage mean vector ($\mathbf{\mu}_{\beta\_site}$ and $\mathbf{\mu}_{\beta\_obs}$), which represents the baseline response of the collective assemblage to each predictor.
+
+We lnked the variance and covariance of species deviations to a phylogenetic correlation matrix ($\mathbf{\Sigma}_{\mathrm{phylo}}$) by multiplying the raw, standard-normal species deviations ($\mathbf{\beta}_{\mathrm{site\_raw}}$ and $\mathbf{\beta}_{\mathrm{obs\_raw}}$) by a dynamically mixed Cholesky factor ($\mathbf{L}_{\mathrm{phylo\_mixed}}$), which scales between-species correlation by their phylogenetic relatedness.
+
+We found that using an Ornstein Uhlenbeck (OU) model [@lande_1976] to model phylogenetic correlation produced a more stable, efficiently-sampled model than the more commonly used Brownian model of evolutionary divergence (e.g. @ovaskainen_etal_2017; see Supplementary material "MW_metabarcoding_200_spp_vcv_opt.qmd"). We applied the OU model as:
+
+$$
+\mathbf{L}_{\mathrm{phylo\_mixed}} = \mathrm{cholesky\_decompose}( e^{(-2 \cdot \alpha_{\mathrm{phylo}}(1 - \mathbf{\Sigma}_{\mathrm{phylo}}))})
+$$
+
+where $\alpha_{\mathrm{phylo}}$ is the global selection strength. We assigned a weakly informative prior to $\alpha_{\mathrm{phylo}}$ of $\mathrm{Normal}(0, 5)$, bounded to a lower threshold of zero.
+
+These phylogenetically structured deviations are pre-multiplied by a vector of scale hyperparameters ($\mathbf{scale}_{\beta\_site}$ and $\mathbf{scale}_{\beta\_obs}$) combined with an LKJ-regularised correlation matrix ($\mathbf{L}_{\Omega}$). This structure allows common, well-sampled species to share environmental information with rare, closely related species.
+
+We used the 2-dimensional latent factor matrix ($\mathbf{Z}_{\mathrm{exp}[i]}$) to model unmeasured site characteristics and residual random biotic variation without over-parameterizing the model. We first derived an unconstrained Latent Factor Ordination matrix product ($\mathbf{Z} \mathbf{\Lambda}^T$) with $n_{latent} = 2$ axes [@hui_2016]. JSDMs usually constrain the species loading matrix ($\mathbf{\Lambda}$) to identify the orientation of the axes during sampling. However, in exploratory analyses, we found that the large number of species in our dataset prevented convergence if ($\mathbf{\Lambda}$) was constrained.
+
+We thus implemented an unconstrained, non-centered latent framework [@assman_etal_2014], assigning the raw matrices $\mathbf{Z}_{raw}$ and $\mathbf{\Lambda}_{raw}$ standard normal priors, and scaling by global hyper-parameters ($\sigma_z, \sigma_{\lambda}$). To prevent the latent site variables from competing for variance with the environmental site variables, we constructed an orthogonal projection residual matrix ($\mathbf{M}_{\mathrm{site\_env}}$) prior to sampling:
+
+$$
+\mathbf{M}_{\mathrm{site\_env}} = \mathbf{I} - \mathbf{u}_{\mathrm{site}}(\mathbf{u}_{\mathrm{site}}^T\mathbf{u}_{\mathrm{site}})^{-1}\mathbf{u}_{\mathrm{site}}^T
+$$
+
+The final latent site matrix was projected into the null-space of the environment as $\mathbf{Z}_{\mathrm{clean}} = \mathbf{M}_{\mathrm{site\_env}} \mathbf{Z}_{raw}$, ensuring that the resulting latent axes solely quantify residual variation, orthogonal to the site-level environmental predictors.
+
+To recover aligned latent factor ordinations from the model sample draws, we conducted Procrustean post-processing [@papastamoulis_ntzoufras_2022], to align the latent factor parameters (Z and lambda matrices) and verify their adequate sampling.
+
+Following sampling, the collapsed ($n_{\text{obs}} \times n_{\text{latent}}$) coordinate blocks were extracted from each chain. An iteration-by-iteration standardisation and Orthogonal Procrustes alignment was performed in R using Singular Value Decomposition (SVD), rotating and superimposing the latent trajectories of every individual MCMC step onto a single, frozen baseline reference frame [@assman_etal_2016]. This post-hoc transformation flattened the cross-chain sign-flips and un-spun the rotational drift, yielding fully stationary, unified coordinate parameters across all four chains to generate a pristine, stable 2D site ordination map.
+
+Peer-Reviewed References to Add to Your Draft:
+
+Aßmann, C., Boysen, F., & Jensen, U. (2016). Bayesian Analysis of Dynamic Factor Models: An Ex-Post Approach. Economometric Reviews, 35(4), 651-678.
+
+Papastamoulis, P., & Ntzoufras, I. (2022). On the identifiability of Bayesian Factor Analytic models. Statistics and Computing, 32(2), 23.
+
+Schiavon, E., Legramanti, S., & Dunson, D. B. (2023). Bayesian integrative factor analysis methods, with application to high-dimensional data. Computational Statistics & Data Analysis, 188, 107823.
+
+## MCMC Sampling Strategy and Ex-Post Post-Processing
+
+The model was compiled and executed using Stan's No-U-Turn Sampler (NUTS) (Stan Development Team, 2026). To ensure robust exploration of the posterior and avoid rotational multi-modality traps, we executed \[insert number, e.g., 4\] parallel chains, utilizing a deep adaptation phase (iter_warmup = 1500) to absorb initial parameter trajectories, followed by a sampling phase (iter_sampling = 1000). To keep the memory footprint lightweight and avoid out-of-memory RAM crashes when scaling to 875 species, high-dimensional intermediate matrices ($\mathbf{\Lambda}, \mathbf{Z}_{\mathrm{expanded}}$, and $\mu$) were declared inside isolated local statement blocks within the Stan script, ensuring they were utilized to evaluate the likelihood but discarded prior to saving the output files.
+
+Because the latent factors were sampled without structural constraints, different MCMC chains can select completely arbitrary sign-flips, axis rotations, or permutations across the unidentifiable ridge. While this fluidity keeps the sampler highly efficient and protects the fixed effects ($\mathbf{\beta}$) from collapsing, it renders raw cross-chain convergence diagnostics ($\hat{R}$ and Bulk/Tail ESS) for $\mathbf{Z}$ and $\mathbf{\Lambda}$ invalid.
+
+To resolve this, we employed an Ex-Post Procrustean Post-Processing workflow (Papastamoulis & Ntzoufras, 2022; Schiavon et al., 2023). Following sampling, an iteration-by-iteration Orthogonal Procrustes alignment was performed in R using Singular Value Decomposition (SVD) to rotate and superimpose the latent coordinates of every single iteration across all chains onto a fixed baseline reference frame (Aßmann et al., 2016). Final model convergence was strictly validated using Split-$\hat{R}$ ($< 1.05$) and Bulk ESS metrics evaluated exclusively on the rotationally invariant parameters: the environmental slopes ($\mathbf{\beta}$), species intercepts ($\alpha$), and cell-by-cell out-of-sample predictive accuracy metrics.
+
+## Model Evaluation
+
+Model validation and discrimination power were assessed by computing pointwise Leave-One-Out Cross-Validation (LOO-CV) metrics via Pareto Smoothed Importance Sampling (PSIS-LOO) (Vehtari et al., 2017). Predictive accuracy for individual species was parsed into two separate dimensions using Tjur's Coefficient of Discrimination ($R^2_{\mathrm{Tjur}}$; Tjur, 2009):
+
+1.  $R^2_{\mathrm{Tjur-Env}}$: Calculated using a secondary linear predictor matrix ($\mu_{\mathrm{env}} = \alpha_j + \mathbf{u}\mathbf{\beta}$) to measure the isolated explanatory power of our explicit environmental hypotheses.
+2.  $R^2_{\mathrm{Tjur-Total}}$: Calculated using the full linear predictor matrix ($\mu$) to quantify the total community discrimination power achieved by combining our fixed effects with the residual latent ordination space.
+
+## Results
+
+The first joint-species distribution model of the data using the resulting data produced strong predictions of occurrence for most species, and of species richness, when both fixed environmental predictors and latent-factors were used. Predictions of most species were moderately good using only environmental predictors, but the combined predictions of species richness per sample were weak (@fig-richness).
+
+```{r}
+#| label: fig-richness
+#| echo: false
+#| fig-width: 7
+#| fig-height: 3.5
+#| fig-cap: "Mean predicted species richness per sample with 95% confidence limits against observed richness, A for the full model, and B as predicted solely by fixed predictors. The points are coloured by the MiSeq run in which they were processed. The solid line is 1:1. The dotted line is the regression line, in the case of B, excluding run 15 samples."
+
+rich_oe$miseq_run <- ordn_smpcode$miseq_run[match(rich_oe$smpcode, ordn_smpcode$smpcode)]
+cols <- RColorBrewer::brewer.pal(6, "Dark2")
+rich_oe$run_col <- cols[3]
+rich_oe$run_col[rich_oe$miseq_run == 15] <- cols[1]
+rich_oe$run_col[rich_oe$miseq_run == 16] <- cols[2]
+rich_oe$run_col[rich_oe$miseq_run == 17] <- cols[4]
+rich_oe$run_col[rich_oe$miseq_run == 18] <- cols[5]
+rich_oe$run_col[rich_oe$miseq_run == 19] <- cols[6]
+
+par(mfrow = c(1,2), mar = c(4,4,1,1))
+plot(rich_oe$obs_richness, rich_oe$mean_exp_richness, col = rich_oe$run_col,
+     ylim = c(0,210), xlim = c(0,210), xlab = "Observed richness",
+     ylab = "Predicted richness", axes = FALSE)
+abline = c(0,1)
+for(i in 1:nrow(rich_oe)){
+  lines(rep(rich_oe$obs_richness[i],2),
+    c(rich_oe$ci_lower[i], rich_oe$ci_upper[i]), col = rich_oe$run_col[i])
+}
+abline(0,1,lty = 1); axis(1); axis(2, las = 1); box(bty = "l")
+oe_mod <- lm(mean_exp_richness ~ obs_richness, data = rich_oe)
+abline(oe_mod, lty = 3)
+title(main = paste("A. R2 = ", round(summary(oe_mod)$r.squared, 2)), 
+      adj = 0, font.main = 1, cex.main = 0.85)# summary(oe_mod)$r.squared  # 0.85
+# identify(rich_oe$obs_richness,rich_oe$mean_richness, rich_oe$smpcode)
+
+ plot(rich_oe$obs_richness, rich_oe$mean_exp_richness_env, 
+     ylim = c(0,210), xlim = c(0,210), xlab = "Observed richness", col = rich_oe$run_col,
+     ylab = "Predicted richness (fixed predictors only)", axes = FALSE)
+abline = c(0,1)
+for(i in 1:nrow(rich_oe)){
+  lines(rep(rich_oe$obs_richness[i],2),
+    c(rich_oe$ci_lower_env[i], rich_oe$ci_upper_env[i]),
+    col = rich_oe$run_col[i],)
+}
+abline(0,1,lty = 1); axis(1); axis(2, las = 1); box(bty = "l")
+oe_mod_env <- lm(mean_exp_richness_env ~ obs_richness, 
+          data = rich_oe[!rich_oe$miseq_run %in% c(15:16),])
+abline(oe_mod_env, lty = 3)
+title(main = paste("B. R2 = ", round(summary(oe_mod_env)$r.squared, 2), " (excl. run 15)"), 
+      adj = 0, font.main = 1, cex.main = 0.85)
+# summary(oe_mod_env)$r.squared  # 0.46 - not super great
+# identify(rich_oe$obs_richness,rich_oe$mean_exp_richness_env, substr(rich_oe$smpcode,5,7))
+legend("topleft",pch = 1, col = cols[c(1,2,4:6,3)], legend = c(15:19,"other"), 
+       title = "Miseq run", cex = 0.75)
+
+```
+
+The poor prediction of species richness was driven most strongly by:
+
+-   a group of sites for which observed richness was much higher than predicted by the environmental predictors of the model. The largest outliers were all from Miseq Run 15. Ten of these samples were also outliers along the second latent axis of the model (@fig-latent_ordination).
+
+-   a group of sites for which observed richness was lower than predicted, mostly from runs 19 and 22. While this group was not strongly evident in the latent-factor ordination (@fig-latent_ordination), samples from these two runs sat higher on the second latent axis (@fig-ordn_v_run).
+
+```{r}
+#| label: fig-latent_ordination
+#| echo: false
+#| fig-width: 4
+#| fig-height: 4
+#| fig-cap: "Ordination of latent factors explaining random variation among sites. The points are coloured by the MiSeq run in which they were processed ('repeated' grey points indicate sites that were sampled more than once and processed in more than one MiSeq run) ."
+
+site_ordn$run_col <- rich_oe$run_col[match(site_ordn$miseq_run, rich_oe$miseq_run)]
+site_ordn$run_col[is.na(site_ordn$run_col)] <- grey(0.8)
+par(mfrow = c(1,1), mar = c(4,4,1,1), pty = "s")
+comm_rng <- range(c(site_ordn$z1, site_ordn$z2))
+plot(site_ordn$z1, site_ordn$z2,  pch = 21, bg = site_ordn$run_col, 
+     ylim = comm_rng, xlim = comm_rng,
+     xlab = "Latent axis 1", ylab = "Latent axis 2")
+abline(v = 0, h = 0, lty = 2)
+# identify(site_ordn$z1, site_ordn$z2, site_ordn$reach_v12)
+legend("topleft",pch = 21, pt.bg = c(cols[c(1,2,4:6,3)],grey(0.8)), legend = c(15:19,"other","repeated"), 
+       title = "Miseq run", cex = 0.75)
+
+```
+
+Plotting the latent axis scores against miseq run (@fig-ordn_v_run) suggests a general difference between Miseq runs, with axis 1 showing runs 15 and 16 differing from the other runs. The outliers of run 15 are more pronounced in axis 2, which also suggests runs 19 and 22 are different from other runs.
+
+```{r}
+#| label: fig-ordn_v_run
+#| echo: false
+#| fig-width: 7
+#| fig-height: 4
+#| fig-cap: "Latent factor axes 1 (A) and 2 (B) of samples in each MiSeq run as box plots.  The runs are ordered by their mean axis 1 score"
+
+mean_z1 <- aggregate(ordn_smpcode$z1, by = list(run = ordn_smpcode$miseq_run), FUN = mean)
+mean_z1 <- mean_z1[order(mean_z1$x),]
+mean_z1$run_f <- factor(mean_z1$run, levels = mean_z1$run)
+ordn_smpcode$run_f <- mean_z1$run_f[match(ordn_smpcode$miseq_run, mean_z1$run)]
+
+par(mfrow = c(1,2), mar = c(4,3,1,1))
+plot(ordn_smpcode$run_f, ordn_smpcode$z1, xlab = "MiSeq run", ylab = "Latent axis 1", 
+     las = 1, ylim = comm_rng, cex.axis = 0.8)
+title(ylab = "Latent axis 1", line = 2)
+# points(mean_z1$run_f, mean_z1$x, col = "red", pch = 4)
+plot(ordn_smpcode$run_f, ordn_smpcode$z2,, xlab = "MiSeq run", ylab = "Latent axis 2", 
+     las = 1, ylim = comm_rng, cex.axis = 0.8)
+title(ylab = "Latent axis 2", line = 2)
+
+```
+
+The differences in runs 15 and 16, are associated with underestimates of species richness (@fig-richness). Run 15 is the most aberrant run on Latent axis 1, followed by run 16, with little difference between other runs (@fig-ordn_v_run A). There is little difference between runs on axis 2, except for the outlying samples in run 15, and higher axis scores for runs 19 and 22 (@fig-ordn_v_run B).
+
+Runs 19 and 22 samples generally have low richness (@fig-richness) and their richness counts tend to be overestimated by the model. This trend is considered below.
+
+At a minimum, this analysis suggests erroneous species records in some of the samples from miseq run 15 (the outliers in @fig-latent_ordination). In an earlier iteration of model development, we excluded one sample from miseq run 17: 384-UYT, which also had unusually high species richness. That sample was an extreme outlier in the full model because there were four other samples from that site which fitted the model well. On inspection, one of the three miseq replicates of that sample had three times the species than the other two. No other samples in the dataset had such a disparity among replicates. Taken together, these data anomalies suggest the potential for errors, either in the PCR process or in data compilation.
+
+### Assessment of core reliability of sample data
+
+To investigate the potential for data compilation error, I first focussed on the outlying run 15 samples, and asked do they contain some reliable information? To answer this question I compared species present in the 31 miseq-run-15 samples, for which there was species-level data from previous morphologically identified samples in the database. I used two lines of evidence to assess reliability of the metabarcoding data for those sites: a) the presence of abundant species from morphological samples in metabarcoding samples from the same site, and b) the presence of species predicted by the metabarcoding model to have a high probability of occurrence in morphological samples from the same site.
+
+Abundant taxa in morphological samples were mostly detected in metabarcoding samples (@fig-db_mb_matches B). In a few cases, the metabarcoding samples contained congenerics of missing species which could have been misidentifications in the morphological data. Most of the missing species were taxa identified to high taxonomic levels in morphological identification (e.g Oligochaeta), and the samples with low matching proportions in @fig-db_mb_matches B were dominated by such taxa.
+
+```{r}
+#| label: fig-db_mb_matches
+#| echo: false
+#| fig-width: 7
+#| fig-height: 4
+#| fig-cap: "Distributions of identification matches betweenn historic morphologically identified samples in the database and metabarcoding samples from miseq Run 15. A. Proportion of species in metabarcoding samples with >0.8 predicted probability of occurrence that were identified in morphological samples.  B. Proportion of top-10 most abundant species in each sample present in the metabarcoding sample from the same site."
+#| 
+
+db_mb_matches <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/fp_db_mb_matches.rds")
+# compiled in fp_run15_outlying_sample_reliabliity_check.R
+par(mfrow = c(1,2))
+hist(db_mb_matches$ppn_mb_spp_matched, xlab = "Ppn predicted high probability spp in morph samples", 
+     main = NULL, xlim = c(0,1))
+title(main = "A", adj = 0)
+hist(db_mb_matches$ppn_db_mb_matches, xlab = "Ppn top-10 morph species in metbarcoding sample", 
+     main = NULL, xlim = c(0,1))
+title(main = "B", adj = 0)
+
+```
+
+Similarly taxa predicted to occur at sites with P\>0.8 by metabarcoding model (using environmental predictors only) were mostly present in morphological samples as frequently as predicted (0.7-1.0). Taxa missing from morphological samples were those that were either never identified morphologically (e.g. IB51 Olindiidae), usually identied to high taxonomic levels (e.g. Oligochaeta), or likely to be missed in visual sorting (e.g. QD78 Ephydridae).
+
+The two sites with the worst matches were two urban sites on Dandenong Creek, for which sample codes were mixed up in the source sequence data. I confirmed that this confusion had been corrected in the data used in the model (switching the codes back made the matches worse). Their low match proportions were a result of them being dominated by lower taxa (such as Oligochaeta).
+
+This assessment shows that the outlying miseq run 15 metabarcoding samples reliably contain species associated with their specified sites. The problem with this run is thus not likely to be a result of data errors in sample coding. The errors are therefore primarily false positive records which may have arisen from other data errors or from mis-tagging in the laboratory process.
+
+```{r}
+#| label: tbl-control_summaries
+#| echo: false
+#| tbl-cap: "Summary of the controls for each of the 8 MiSeq runs"
+
+# See fp_assemble_controls.R
+load("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/fp_controls_summaries.rda")
+# Contains a list of control data for each run named run_XX_controls, and a summary table of the lot saved as..
+# control_summary_tab
+
+# Need to add run-specific info about fit to environment model.
+summary_tab <- data.frame(t(control_summary_tab[,-1]), row.names = NULL)
+summary_tab <- dplyr::mutate(summary_tab, Run = runs, .before = neg_control_aq_macro_records)
+summary_tab$ppn_pos_resids <- summary_tab$RMSE <- summary_tab$n_samples <- NA
+
+for(i in 1:length(runs)){
+  run_rich <- rich_oe[rich_oe$miseq_run == runs[i],]
+  summary_tab$n_samples[i] <- nrow(run_rich)
+  summary_tab$RMSE[i] <- sqrt(sum((run_rich$obs_richness - run_rich$mean_exp_richness_env)^2)/nrow(run_rich))
+  summary_tab$ppn_pos_resids[i] <- sum(run_rich$obs_richness - run_rich$mean_exp_richness_env > 0)/nrow(run_rich)
+}
+# In all cases the max ppn of the maximum spike read was ~ 3 times the maximum proportion of the sum of spike reads.
+# Max is the stronger logical metric to use.
+
+ft <- flextable::flextable(control_summary_tab)
+ft
+
+```
+
+### Identification of false positives
+
+There were differences in laboratory processes between runs which may have resulted in differences in false-positive prevalence. Run 13 samples were processed in a hood, runs 15 and 16 were processed on a post-PCR bench, while subsequent runs were processed under a UV-equipped hood (M E Carew, pers. comm. inferred from an email sent to CJW 30 March 2026. Waiting on confirmation/correction of my interpretation of that email)
+
+The usual method for assessing the prevalence of false positives (inter-sample contamination, tag-jump, or chimeras) is to use internal controls for each run [@gonzalez_etal_2023]. Patterns in control results did not explain the observed differences between runs well (@tbl-control_summaries). The lack of records in negative controls would suggest no significant cross-contamination among samples in a run. Spike controls showed some low-level contamination. Further information is required on the compositional controls, but as far as I can tell, there is no evidence of cross-contamination in them as well. Runs 15 and 16 did not show any greater contamination rates than any other runs.
+
+A different approach to identifying false positives is required.
+
+Beginning with runs other than 15, I initially filtered samples in each run by focussing on the species with the largest number of reads in the run. I ranked species by the maximum number of reads in the run, and assessed the records with fewer reads than ppn_max (the proportion of the maximum number of reads of that species in the run), for values of ppn_max between 0.0001 and and 0.006 (the range of contamination from spike controls across runs: @tbl-control_summaries). Starting with the most abundant species, I used ecological knowledge and records across the full study to assess if records with \<ppn_max reads were likely false positives. For example, if a tolerant, cosmopolitan species occurred in protected catchment streams, or a sensitive upland species occurred in a lowland degraded urban stream, then the record was feasibly a false positive. Similarly, if a species was recorded in other runs with many reads at other sites, but only once, with low reads at the site in question, it was likely a false positive. For high-read species for which such inference was possible, I increased ppn_max until no additional likely false positives were identified, and records that were less likely to be false positives began to dominate the list. Thus for each run, an initial set of likely false positives was assembled, having been derived using a specific ppn_max.
+
+Repeat sampling of 15 of the 274 sites provides one measure for maximising the identification of false positives, while minimizing the mis-classification of true positives as false. A species collected at one site may or may not be present in a repeat sample either because of sampling inefficiency or ecological variability. Thus if the species was recorded in one run and not any others, it is at best weak evidence of the record being a false positive. On the other hand, if a species was recorded in one run, and other runs, it is stronger evidence that the record is is a true positive.
+
+Thus in comparing filtering strategies for each run, I compiled the records of each species that occurred from each site in other runs (excluding the initial likely false positives). I considered filtering strategies that minimize the proportion of those likely-true-positives 'mis-classified' as false positives as more optimal.
+
+In addition, three samples in run 15 and one in run 16 were samples from the bulk-processing experiment (@wilkins_etal_2026). Each of the ten samples used in that experiment were subsampled into 10%, 20%, 20% and 40% subsamples, and 2 replicate miseq samples of each subsample was processed in run 13. Subsample size had a small effect on species occurrence. Four of the subsamples required re-processing, resulting in the repeat samples in runs 15 and 16. As each of these processed samples in runs 15 and 16 were from the same physical samples as their matching processed ssamples in run 13, the presence of a species in a sample in run 13 provides even stronger inference of a true positive than other repeat samples in the dataset, considered above.
+
+The current analysis and that of @wilkins_etal_2026 showed that the prevalence of false positives in run 13 data was low. The prevalence of false positives in the repeat run15 bulk processing samples was also low compared to that of other run 15 samples. For the three bulk-processing samples processed in both runs 13 and 15, there were 13 records detected in run 13 that were not matched in run 15. With the run 13 records drawn from 3 subsamples, and the run 15 records from 1, these 13 records could all conceivably be true positives. The evidence for any of them being false positives is not strong. In contrast 32 records detected in the one subsample from run 15 were not detected in any of the three subsamples from run 13. It is likely that a proportion of these records were also true positives (likely fewer than the 13 run 13 records absent frmo run 15, being detected in 3 replicates from one subsample in run 15 rather than 6 replicates from 2 subamples in run 13), but the majority are likely false positives.
+
+There were 247 matching records in the three samples in both runs 13 and 15. An optimal filtering strategy should also minimize the proportion of those records identified as false positives.
+
+The hierarchical joint-species distribution model separates variation due to fixed (environmental) predictors from other structured variance among species. The underestimation of observed richness for run 15 samples by fixed predictors (@fig-richness B) is indicative of the 'observed' richness being inflated by false positives in samples from that run. False positives are more likely to occur in species that are less well predicted by the fixed predictors in samples from that run. The agreement between observed and predicted among samples from run 15 was poor (Root-mean-square error RMSE = 50.4 compared to 17-20 for runs 17-19, noting that RMSE for runs 13, 20 and 22 is likely to be more variable because of their few samples @tbl-control_summaries). For the 5 runs with \>44 samples, the degree to which RMSE is improved with removal of possible false positives is a supplementary optimization metric.
+
+I trialled a range of filtering strategies for run 15 samples, as that run was likely to have more false positives than others. The effect of the trialled filtering strategies on the optimization metrics is shown in @fig-run15_filter_trial.
+
+```{r}
+#| label: fig-run15_filter_trial
+#| fig-width: 7
+#| fig-height: 7
+#| fig-cap: "Effect of 8 filtering strategies on three optimization metrics for samples processed in Miseq run 15. The primary metrics measured putative misclassifications in three samples that were processed in both runs 15 and 13 (from the bulk-processing experiment, BP): A. Proportion of true positives (matching records detected in both runs) classified as false positives and B. Proportion of likely false positives (records detected in run 15, but not run 13) classified as true positives, both plotted against the Root-mean-square-prediction error of observed species richness (after removal of false positives) vs the predicted richness using the working model. For each strategy a wide range of values were used for relevant measures: n, the threshold number of reads, pm, the threshold n as a proportion of the maximum n in run 15; ps, the threshold n as a proportion of the sum of n in run 15. Variants on those strategies also used but not plotted: AUC, the area under the curve measure of model fit for each species; and the predicted probability of occurrence for each record. P_occurrence < 0.75 and <0.85 were also trialled, but <0.8 was optimal."
+
+fits_list <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/fits_list_15.rds")
+filter_methods <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/filter_methods.rds")
+
+par(mfrow = c(2,2), mar = c(4,4,1,1))
+with(fits_list$`max number of reads`, 
+     plot(oe_rmse, ppn_bp_tps_misclassified, xlim = c(15,50), las = 1,
+          xlab = "RMSE observed:predicted", ylab = "Ppn true positives misclassified (BP)"))
+title(main = "A.", adj = 0)
+with(fits_list$`max ppn of max reads in run`,
+     points(oe_rmse, ppn_bp_tps_misclassified, col = "darkgreen"))
+with(fits_list$`max ppn of sum of reads in run`, 
+     points(oe_rmse, ppn_bp_tps_misclassified, col = "orange"))
+with(fits_list$`ppn max reads with upper n`, 
+     points(oe_rmse, ppn_bp_tps_misclassified, col = "blue"))
+# with(fits_list$`ppn max reads with upper n and lower sp run auc`, 
+#      points(oe_rmse, ppn_bp_tps_misclassified, col = "magenta"))
+# with(fits_list$`ppn max reads with upper n AND p_occ < prevalence`, 
+#      points(oe_rmse, ppn_bp_tps_misclassified, col = "darkgreen"))
+# with(fits_list$`ppn max reads with upper n and lower sp global auc`, 
+#      points(oe_rmse, ppn_bp_tps_misclassified, col = "brown"))
+with(fits_list$`ppn max reads with upper n AND p_occ < 0.8`,
+     points(oe_rmse, ppn_bp_tps_misclassified, pch = 21, bg = "cyan"))  # completely useless
+with(fits_list$`ppn max reads AND p_occ < 0.80`,
+     points(oe_rmse, ppn_bp_tps_misclassified, pch = 21, bg = "red"))  # completely useless
+# with(fits,points(oe_rmse, ppn_bp_tps_misclassified, pch = 19))  # completely useless
+# with(fits_list$`ppn max reads with upper n and lower sp global auc`,
+#      identify(oe_rmse, ppn_bp_tps_misclassified))
+
+with(fits_list$`max number of reads`, 
+     plot(oe_rmse, ppn_bp_fps_misclassified, xlim = c(15,50), ylim = c(0,1), las = 1,
+          xlab = "RMSE observed:predicted", ylab = "Ppn false positives misclassified (BP)"))
+title(main = "B.", adj = 0)
+with(fits_list$`max ppn of max reads in run`,
+     points(oe_rmse, ppn_bp_fps_misclassified, col = "darkgreen"))
+with(fits_list$`max ppn of sum of reads in run`, 
+     points(oe_rmse, ppn_bp_fps_misclassified, col = "orange"))
+with(fits_list$`ppn max reads with upper n`, 
+     points(oe_rmse, ppn_bp_fps_misclassified, col = "blue"))
+# with(fits_list$`ppn max reads with upper n and lower sp run auc`, 
+#      points(oe_rmse, ppn_bp_fps_misclassified, col = "magenta"))
+# with(fits_list$`ppn max reads with upper n AND p_occ < prevalence`, 
+#      points(oe_rmse, ppn_bp_fps_misclassified, col = "darkgreen"))
+with(fits_list$`ppn max reads with upper n AND p_occ < 0.8`,
+     points(oe_rmse, ppn_bp_fps_misclassified, , pch = 21, bg = "cyan"))  
+with(fits_list$`ppn max reads AND p_occ < 0.80`,
+     points(oe_rmse, ppn_bp_fps_misclassified, pch = 21, bg = "red"))  # completely useless
+# with(fits,points(oe_rmse, ppn_bp_fps_misclassified, pch = 19))  # completely useless
+# with(fits_list$`ppn max reads with upper n and lower sp global auc`,
+#      identify(oe_rmse, ppn_bp_tps_misclassified))
+      
+with(fits_list$`max number of reads`, 
+     plot(oe_rmse, ppn_resampled_tps_misclassified, xlim = c(15,50),las = 1,
+          xlab = "RMSE observed:predicted", ylab = "Ppn true positives misclassified (resampled)"))
+title(main = "C.", adj = 0)
+with(fits_list$`max ppn of max reads in run`,
+     points(oe_rmse, ppn_resampled_tps_misclassified, col = "darkgreen"))
+with(fits_list$`max ppn of sum of reads in run`, 
+     points(oe_rmse, ppn_resampled_tps_misclassified, col = "orange"))
+with(fits_list$`ppn max reads with upper n`, 
+     points(oe_rmse, ppn_resampled_tps_misclassified, col = "blue"))
+# with(fits_list$`ppn max reads with upper n and lower sp run auc`, 
+#      points(oe_rmse, ppn_resampled_tps_misclassified, col = "magenta"))
+# with(fits_list$`ppn max reads with upper n AND p_occ < prevalence`, 
+#      points(oe_rmse, ppn_resampled_tps_misclassified, col = "darkgreen"))
+# with(fits_list$`ppn max reads with upper n and lower sp global auc`, 
+#      points(oe_rmse, ppn_resampled_tps_misclassified, col = "brown"))
+with(fits_list$`ppn max reads with upper n AND p_occ < 0.8`,
+     points(oe_rmse, ppn_resampled_tps_misclassified, pch = 21, bg = "cyan")) 
+with(fits_list$`ppn max reads AND p_occ < 0.80`,
+     points(oe_rmse, ppn_resampled_tps_misclassified, col = "red", pch = 19)) 
+# with(fits_list$`ppn max reads with upper n and lower sp global auc`,
+#      identify(oe_rmse, ppn_resampled_tps_misclassified))
+
+plot.new()
+par(mar = c(0,0,0,0))
+legend("center",pch = c(rep(1,7),21), 
+       col = c("black","darkgreen","orange","blue","cyan","red"),
+       pt.bg = c(rep(NULL, 4), "cyan","red"),
+       legend = filter_methods$better_description[match(c("max number of reads","max ppn of max reads in run",
+                                                          "max ppn of sum of reads in run","ppn max reads with upper n",
+                                                          "ppn max reads with upper n AND p_occ < 0.8",
+                                                          "max mumber of reads = n AND p_occ < 0.8"), filter_methods$method)], 
+       cex = 0.9, title = "False positives have no. reads <")
+
+```
+
+For run 15, all filtering strategies improved the fit of observed:predicted number of species by the initial model (Root-mean-square prediciton error, RMSE, was \>50 in the unfiltered dat: @fig-run15_filter_trial B). Simplest strategies such as filtering by number of reads or the proportion of the maximum number, or sum of, reads for each species misclassified a large proportion true positives. As the filter thresholds for each of those simple strategies increase, the proportion of misclassified true positives decreased (@fig-run15_filter_trial A), but the proportion of false-positives misclassified increased. A more complex strategy (of filtering by the minimum of the number of reads and the proportion of the maximum number of reads if the predicted probability of occurrence was \<0.8) produced lower proportions of both types of misclassification (cyan points in @fig-run15_filter_trial A and B).
+
+The proportion of false-positives misclassified from the bulk-processing experiment was not a perfect indicator, as it is likely that some of the 34 species records from run 15 not present in the same samples from run 13 were species that were present in subsamples processed in run 13 but not run 15. Inspection the records flagged as misclassified by the strategy with the lowest RMSE and 27% misclassification, confirmed that the 8 records were all ecologically feasible, and thus likely not actualy false positives. I thus selected that strategy as the optimal filter (resulting in 1558 false positives, 33.8% of records in run 15).
+
+```{r}
+#| label: fig-run16_filter_trial
+#| echo: false
+#| fig-width: 7
+#| fig-height: 3.5
+#| fig-cap: "Effect of 8 filtering strategies on three optimization metrics for samples processed in Miseq run 15. The primary metrics measured putative misclassifications in three samples that were processed in both runs 15 and 13 (from the bulk-processing experiment, BP): A. Proportion of true positives (matching records detected in both runs) classified as false positives and B. Proportion of likely false positives (records detected in run 15, but not run 13) classified as true positives, both plotted against the Root-mean-square-prediction error of observed species richness (after removal of false positives) vs the predicted richness using the working model. For each strategy a wide range of values were used for relevant measures: n, the threshold number of reads, pm, the threshold n as a proportion of the maximum n in run 15; ps, the threshold n as a proportion of the sum of n in run 15. Variants on those strategies also used: AUC, the area under the curve measure of model fit for each species; and the predicted probability of occurrence for each record. P_occurrence < 0.75 and <0.85 were also trialled, but <0.8 was optimal."
+
+fits_list <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/fits_list_16.rds")
+
+par(mfrow = c(1,2), mar = c(4,4,1,1))
+with(fits_list$`ppn max reads with upper n AND p_occ < 0.8`, 
+     plot(oe_rmse, ppn_resampled_tps_misclassified, xlim = c(18,23), ylim = c(0,0.2), las = 1, 
+          pch = 21, bg = "cyan",
+          xlab = "RMSE observed:predicted", ylab = "Ppn true positives misclassified (BP)"))
+title(main = "A.", adj = 0)
+with(fits_list$`ppn max reads with upper n`, 
+     points(oe_rmse, ppn_resampled_tps_misclassified, col = "blue"))
+with(fits_list$`max ppn of max reads in run`,
+     points(oe_rmse, ppn_resampled_tps_misclassified, pch = 19, col = "red"))  # completely useless
+# with(fits_list$`ppn max reads with upper n AND p_occ < 0.8`,
+ #      identify(oe_rmse, ppn_resampled_tps_misclassified))
+#    ppn_max upper_n crit3  oe_rmse ppn_resampled_tps_misclassified ppn_resampled_fps_misclassified
+# 63    0.03       8    NA 20.83434                           0.004                       0.9313725
+# 65    0.05       8    NA 20.50031                           0.008                       0.9166667
+# 75    0.05       9    NA 20.40278                           0.012                       0.9117647
+# 
+
+plot.new()
+par(mar = c(0,0,0,0))
+legend("center",pch = c(21,1,19), 
+       col = c("black","blue","red"),
+       pt.bg = c(NULL, "cyan",NULL),
+       legend = filter_methods$better_description[match(c("max ppn of max reads in run",
+                                                          "ppn max reads with upper n",
+                                                          "ppn max reads with upper n AND p_occ < 0.8"),
+                                                        filter_methods$method)], 
+       cex = 0.8, title = "False positives have no. reads <")
+
+```
+
+I used a similar logic for run 16, as it was also identified by the model's latent factors as different. The optimal strategy for run 16 was a minimum of 8 reads or 0.03 as a proportion of the maximum number of reads, resulting in 227 false positives.
+
+For all other runs, I used the proportion of the maximum number of reads as the only filter, using the logic outlined above for preliminary filtering, without recourse to the ecological model. In all cases, except for run 17, this resulted in a smaller proportion of records being classed as false positives (@tbl-run_summary)
+
+```{r}
+#| label: tbl-run_summary
+#| echo: false
+
+summary_tab <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/fp_summary_tab.rds")
+summary_tab$ppn_records_fp <- round(summary_tab$ppn_records_fp*100,1)
+ft <- flextable::flextable(summary_tab)
+ft <- flextable::set_header_labels(ft, 
+  run = "MiSeq run", 
+  strategy = "Filtering strategy", 
+  n_false_positives = "No. false positives",
+  ppn_records_fp = "False positives as % of records in run"
+)  
+flextable::autofit(ft)
+```
+
+Except for runs 19, 20 and 22, for which zero or few false positives were identified, the removal of false positives improved the agreement between the species richness predicted by the initial model and observed species richness (@fig-oe_bas). However, runs 19 and 22 show a systematic overestimate of richness by the model, suggesting a greater number of false *negatives* in those runs than in other runs.
+
+The systematic differences between runs (currently unexplained, pending further information from Mel Carew) points to a need to account for differences between runs in modelling species richness with these data. If I add a categorical variable classifying the runs into four groups:
+
+-   Run 13: 3-replicate samples compiled from 2 30% subsamples and a 40% subsample from the bulk-processing experiment. (Unlikely to introduce a significant bias, but useful to include if a 'run' variable is to be used)
+
+-   Run 15: Process resulting in many false positives. The identification of false positives for this run is not perfect, and has likely resulted in the exclusion of more true positives than from other runs, potentially introducing a bias for this run.
+
+-   Runs 19 and 22: Process resulting in more false negatives than other runs.
+
+-   Runs 16, 17, 18, and 20: Process that results in a small number of false positives that represents the least biased process among the 8 runs.
+
+```{r}
+#| label: fig-oe_bas
+#| echo: false
+#| fig-width: 7
+#| fig-height: 3
+#| fig-cap: "Species richness for every sample in each MiSeq run predicted by the initial species-distribution model, plotted against observed species richness, first using data as received (with FPs, false positives), and recalculated once FPs have been removed. Note that the points in each plot are the mean points in @fig-richness, but separated by run for clarity."
+
+oes <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/oe_ba_fp_removal_data.rds")
+
+runs <- c(13,15,16,17,18,19,20,22)
+layout(matrix(c(1:9,1,10:17,0,rep(18,8)),3,9,byrow = TRUE), 
+       widths = c(2,13,rep(10,7)), heights = c(10,10,2))
+par(mar = c(0,0,0,0))
+plot.new()
+title(ylab = "Predicted species richness", line = -1.25)
+
+for(i in 1:length(oes)){
+  dati <- oes[[paste("run",runs[i],sep="_")]]
+  par(mar = c(2,ifelse(i %in% c(1,5),2,0),1,0))
+  plot(dati$exp, dati$obs, xlim = c(10,210),ylim = c(10,210), las = 1, 
+       xlab = "",ylab = "", yaxt = ifelse(i %in% c(1,5), "s","n"),
+       xaxt = ifelse(i < 5,"n","s"))
+  axis(2,labels = FALSE);  axis(1,labels = FALSE)
+  title(main = paste0("Run ",runs[i]))
+  title(main = "With FPs", font.main= 3, adj = 0, line =  -1, cex.main = 0.8)
+
+    abline(0,1, lty = 3)
+  par(mar = c(2,0,1,1))
+    plot(dati$exp, dati$obs_without_fps, xlim = c(10,210),ylim = c(10,210), 
+       yaxt = "n", xaxt = ifelse(i < 5,"n","s"), xlab = "",ylab = "")
+  abline(0,1, lty = 3)
+  axis(2,labels = FALSE);  axis(1,labels = FALSE)
+  title(main = "FPs removed", font.main = 3, adj = 0, line = -1, cex.main = 0.8)
+}
+par(mar = c(0,0,0,0))
+plot.new(); 
+title(xlab = "Observed species richness", line = -1.5)
+
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Protected catchment sites are a) all sites upstream of the Upper Yarra Dam (YAR_34210 is immediately downstream of the dam)
+source("https://tools.thewerg.unimelb.edu.au/mwstr/data/mwstr_network_functions.R")
+sites_db <- DBI::dbGetQuery(mwstr, paste0("SELECT reach, site FROM subcs WHERE reach IN ('",
+                                          paste(sites$reach_v12, collapse = "', '"), "');"))
+sites$site_db <- sites_db$site[match(sites$reach_v12, sites_db$reach)]
+all_sites_us_uyd <- all_us(sites$site_db[sites$reach_v12 == 'YAR_34210'], mwstr)
+protected_reaches <- c(sites$reach_v12[sites$site_db %in% all_sites_us_uyd[-1]],
+                       sites$reach_v12[grep("WTT_5895|BNY_2956|JKS|PLE_1639|ARE|ARM|OSH|MCM|CMT|STV", 
+                                            sites$reach_v12)])
+# saveRDS(protected_reaches, "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/protected_reaches.rds")
+biota[biota$taxon == "Potamopyrgus antipodarum" & biota$reach %in% protected_reaches,c(1,2,3,5,10:15)]
+# Exceptions to that big statement:
+# WTT  (177 reads) -  site just downstream of the Maroondah Hwy, so not that protected.
+# STV (180 reads) - Not sure what goes on upstream 
+# CG1 (182 reads) _ this is really protected in the UY
+# Many records in the 10s in 17 and 18.... come back to this thought
+```

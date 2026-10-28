@@ -1,0 +1,848 @@
+---
+title: "AF and EI optimisation with SIGNAL score - comparison to multi-taxon model"
+author: Thomas Wilkins
+format: 
+  # html:
+  #   embed-resources: true
+  docx:
+    reference-doc: "../templates/template.docx"
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+---
+
+## 1. Introduction
+
+This document describes the analysis of SIGNAL score models for optimising attenuated forest cover (AF) and effective imperviousness (EI). The models are run in parallel to the multi-taxon models specified in `jointspp_pa_mb.stan`, but are instead univariate models with the SIGNAL score as the response variable, and a single random effect of site. The SIGNAL score is a measure of water quality based on the presence and abundance of macroinvertebrate taxa, with higher scores indicating better water quality. The SIGNAL score was used by Walsh & Webb 2014 to optimise AF, and by Walsh & Kunapo 2009 to optimise EI.
+
+The code provided in `quick_218_spp_data_assembly_for_ou_model.R` produces the object `biota_all`, which forms the biological data for the multi-taxon model analysis. The MW macroinvertebrate database has SIGNAL score information available for most family-level taxa, which I have used to calculate the SIGNAL score for each sample.
+
+```{r}
+#| label: load_data
+#| echo: true
+#| eval: false
+#| warning: false
+
+source("quick_218_spp_data_assembly_for_ou_model.R")
+
+# Connect to database:
+mwbugs <- DBI::dbConnect(RPostgres::Postgres(), dbname = "mwbugs", host = "localhost",
+                         port = 5432, user = "readonly", password = "reachcode_42")
+
+taxon_table <- DBI::dbGetQuery(mwbugs, "SELECT * FROM taxon_all JOIN biotic_indices ON taxon_all.shortcode = biotic_indices.shortcode")
+
+# Lump all macroinvertebrate families into family-level taxa, and assign SIGNAL scores to each family:
+biota_all$famcode <- substr(biota_all$shortcode, 1, 4)
+biota_all$famcode[substr(biota_all$famcode,1,2) == "LO"] <- "LO"
+biota_all$famcode[substr(biota_all$famcode,1,2) %in% c("MO", "MP")] <- "M"
+
+# Using Waters of Victoria SIGNAL scores for each family:
+biota_all$SIGNALWoV2003 <- taxon_table$SIGNALWoV2003[match(biota_all$famcode, taxon_table$shortcode)]
+biota_families <- unique(biota_all[,c("smpcode", "famcode", "SIGNALWoV2003", "reach")])
+
+# Remove NAs:
+sum(is.na(biota_families$SIGNALWoV2003)) # 1236 out of 7818 observations
+
+table(biota_families$famcode[is.na(biota_families$SIGNALWoV2003)])
+# IB03 IB51 IF91 IO02 KP05 LH06    M OP04 OP05 OP09 QD02 QD03 QD36 QDAB QDAG QDAH QDAI QO21 QO30 
+#    7   38    6    8    1    5  190    7    1    1  221    2   40    5   64  262  258   95   25 
+
+length(unique(biota_families$famcode)) # 120 families in total
+length(unique(biota_families$famcode[is.na(biota_families$SIGNALWoV2003)])) # 19 families without SIGNAL score information
+# Remove them:
+biota_families <- na.omit(biota_families)
+
+# calculate SIGNAL score for each sample:
+smp_signal <- unique(biota_families[,c("smpcode", "reach")])
+smp_signal$SIGNAL <- NA
+
+for (i in 1:nrow(smp_signal)) {
+  smp_i <- smp_signal$smpcode[i]
+  smp_rows <- biota_families[biota_families$smpcode == smp_i, ]
+  smp_signal$SIGNAL[i] <- sum(smp_rows$SIGNALWoV2003) / nrow(smp_rows)
+}
+
+# Append to master data:
+master_data$signal <- smp_signal$SIGNAL[match(rownames(master_data$y), smp_signal$smpcode)]
+master_data$signal_sc <- master_data$signal/10 # upper limit of 10 by definition - maps signal to signed boundary of 0<y<1 for beta regression.
+
+# Checking boundaries for signal scores:
+range(master_data$signal_sc)
+
+saveRDS(master_data, file = "temp/signal_master_data.rds")
+
+```
+
+## Running models in Stan
+
+The following code chunks run the SIGNAL models for each of the AF and EI variants. All models were run on 4 chains, with 500 warmup iterations and 500 sampling iterations. No divergent transitions were observed in any of the models. All Rhat values were \< 1.01, indicating good convergence. All minimum tail and bulk effective sample sizes were greater than 400, indicating sampling of the posterior distribution was not inhibited by the geometry of the prior. The LOO-IC values for each model were calculated using the `loo` package, and the results were compared to those from the multi-taxon models.
+
+### Stan code for SIGNAL models
+
+The stan code to run the SIGNAL models is provided below. The model is a beta regression with a logit link function, and includes both site-level and observation-level predictors that were used in the multi-taxon model, as well as a random effect for site.
+
+``` stan
+
+data {
+  int<lower=1> n_obs;                     // Total number of observations
+  int<lower=1> n_site;                    // Number of sites
+  int<lower=1> n_site_pred;               // Number of site-level predictors
+  int<lower=1> n_obs_pred;                // Number of observation-level predictors
+  
+  matrix[n_site, n_site_pred] u_site;     // Site-level predictors
+  matrix[n_obs, n_obs_pred] u_obs;        // Observation-level predictors
+
+  array[n_obs] int<lower=1, upper=n_site> site; // Site index for each observation
+  array[n_obs] real<lower=0, upper=1> y; // vector of signal scores
+}
+
+parameters {
+  // Slopes for static site-specific predictors
+  vector[n_site_pred] beta_site;                
+
+  // Slopes for sample-specific predictors (season, riff)
+  vector[n_obs_pred] beta_obs;                
+
+  // Random site effect:
+  vector[n_site] a_site_raw;
+  real<lower=0> sigma_site;
+  
+  // Global intercept and phi:                
+  real alpha;
+  real<lower=0> phi;
+}
+
+transformed parameters {
+  // Non-centred Regression Slopes
+  vector[n_site] a_site;
+
+  // Non-centered transformations for hierarchical variances
+  a_site = a_site_raw * sigma_site;
+}
+
+model {
+  // Priors for the betas
+  beta_site ~ std_normal();
+  beta_obs ~ std_normal();
+
+  // Priors for site intercepts
+  a_site_raw ~ std_normal();
+  sigma_site ~ student_t(3,0,1);  //
+  alpha ~ std_normal();
+  
+  // Beta overdispersion:
+  phi ~ lognormal(2, 0.3);
+  
+  // by declaring U_site_expanded and mu inside these braces, they are not saved in the model fit.
+    {
+    matrix[n_obs, n_site_pred] U_site_expanded = u_site[site];
+    vector[n_obs] eta; // linear predictor
+    vector[n_obs] mu;  // mean of the beta distribution
+    eta = alpha
+       + U_site_expanded * beta_site
+       + u_obs * beta_obs
+       + a_site[site];
+    mu = inv_logit(eta);  // Transform linear predictor to (0,1) range using the inverse logit function
+    y ~ beta(mu * phi, (1 - mu) * phi); // Likelihood for the observed data
+  }
+}
+
+generated quantities {
+  vector[n_obs] y_rep;       // Simulated replica data
+  vector[n_obs] y_rep_env;   // Simulated replica data predicted using only fixed predictors
+  vector[n_obs] log_lik;     // Flattened log-likelihood
+  vector[n_obs] log_lik_env; // Likelihood given only fixed predictors
+  vector[n_obs] p_total_out; // For calculation of full-model AUC in R
+  vector[n_obs] p_env_out;   // For calculation of AUC using only fixed predictors in R
+  
+  {
+    matrix[n_obs, n_site_pred] U_site_expanded = u_site[site];
+    vector[n_obs] eta;
+    vector[n_obs] eta_env; // Secondary matrix to capture pure environment effects
+    vector[n_obs] mu;
+    vector[n_obs] mu_env;  // Secondary matrix to capture pure environment effects
+
+    // Environmental component only
+    eta_env = alpha
+            + U_site_expanded * beta_site
+            + u_obs * beta_obs;
+    mu_env = inv_logit(eta_env);
+
+    // Full model
+    eta = eta_env + a_site[site];
+    mu = inv_logit(eta);
+
+    for (i in 1:n_obs) {
+
+      // Predicted mean response
+      p_total_out[i] = mu[i];
+      p_env_out[i] = mu_env[i];
+
+      // Posterior predictive observations
+      y_rep[i] = beta_rng(mu[i] * phi, (1 - mu[i]) * phi);
+      y_rep_env[i] = beta_rng(mu_env[i] * phi, (1 - mu_env[i]) * phi);
+
+      // Observation-level log likelihood
+      log_lik[i] = beta_lpdf(y[i] | mu[i] * phi, (1 - mu[i]) * phi);
+      log_lik_env[i] = beta_lpdf(y[i] | mu_env[i] * phi, (1 - mu_env[i]) * phi);
+
+    }
+  }
+}
+```
+
+### Attenuated forest cover using the full stream map
+
+The following code chunk runs the SIGNAL models for each of the AF variants using the full forest cover map. The model was run using the same AF variants as the multi-taxon model, and the LOO-IC contours were compared to those from the multi-taxon model. The results are saved in `af_optm/loo_af_signal.rds`.
+
+```{r}
+#| label: run_af_models
+#| echo: true
+#| eval: false
+#| warning: false
+
+start <- Sys.time()
+
+# load data:
+master_data <- readRDS("temp/signal_master_data.rds")
+master_data$y <- master_data$signal_sc
+variant_data <- master_data
+
+library(cmdstanr)
+source("https://raw.githubusercontent.com/tewilkins/mwbugs_functions/refs/heads/main/mwbugs_functions.R")
+source("code/compile_cmdstanr_model.R")
+source("code/compile_batch_af.R")
+
+# Set options for rstan:
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+af_var_df <- af_var_df[which(af_var_df$sitecode_v12 %in% sites$sitecode_v12),] # subset to only samples in master_data
+af_var_df <- af_var_df[match(sites$sitecode_v12, af_var_df$sitecode_v12),] # reorder to match master_data
+stanfile <- "signal_beta.stan"
+
+# Use only AF variants used in Chris' multi-taxon models:
+af_multi_taxon_loo <- read.csv(file = "temp/af_multi_taxon_loo_comparison.csv", header = TRUE, row.names = 1)
+af_var_df <- af_var_df[,c(which(colnames(af_var_df) == "sitecode_v12"),
+                                   which(colnames(af_var_df) %in% af_multi_taxon_loo$model))]
+af_multi_taxon_loo$model[which(!af_multi_taxon_loo$model %in% colnames(af_var_df))]
+colnames(af_var_df)[which(!colnames(af_var_df) %in% af_multi_taxon_loo$model)]
+
+# Loop through all AF variants and run the model for each one:
+for (i in 2:ncol(af_var_df)) {
+  af <- af_var_df[,i]
+  variant <- colnames(af_var_df)[i]
+  F <- scale(af)
+  
+  new_pred_site <- as.data.frame(master_data$u_site)
+  new_pred_site <- new_pred_site[,c("I","F","Q","Q2","C","T","T2","L","F_I","Q_F","Q_I","F_I_Q")]
+  
+  new_pred_site$F <- as.vector(F)
+  new_pred_site$F_I <- as.vector(F * new_pred_site$I)
+  new_pred_site$Q_F <- as.vector(new_pred_site$Q * F)
+  new_pred_site$Q_I <- as.vector(new_pred_site$Q * new_pred_site$I)
+  new_pred_site$F_I_Q <- as.vector(F * new_pred_site$I * new_pred_site$Q)
+  
+  # Apply new predictions to variant_data:
+  variant_data$u_site <- new_pred_site
+  variant_data$n_site_pred <- ncol(new_pred_site)
+  
+  print(paste0("Running model ", i-1, " of ", ncol(af_var_df)-1))
+  
+  # Run model in rstan:
+  compile_cmdstanr_model(stanfile, 
+                       data = variant_data, 
+                       base_name = variant,
+                       iter_sampling = 500,
+                       iter_warmup = 500,
+                       refresh = 250,
+                       draws_path = "af_optm/draws/",
+                       loo_path = "af_optm/loo/",
+                       summary_path = "af_optm/summary/",
+                       summary_vars = c("alpha", "phi", "sigma_site", "beta_site", "beta_obs"),
+                       loo_var = "log_lik_env")
+}
+
+cmdstanr_time <- Sys.time() - start
+# Time difference of 14.2644 mins
+
+# Get filenames for loo:
+loo_files <- list.files("af_optm/loo/", pattern = "*_loo.rds", full.names = TRUE)
+names(loo_files) <- gsub("_loo.rds", "", basename(loo_files))
+loo_list <- lapply(loo_files, readRDS)
+loo_af_signal <- loo::loo_compare(loo_list)
+saveRDS(loo_af_signal, "af_optm/loo_af_signal.rds")
+
+loo_time <- Sys.time() - start
+loo_time # Time difference of 13.55007 mins
+
+```
+
+### Attenuated forest cover with pruned mapping data
+
+Similarly to AF models with the full map, SIGNAL models for each of the AF variants using the pruned forest cover map are run below. The results are saved in `af_big_optm/loo_af_big_signal.rds`.
+
+```{r}
+#| label: run_af_big_models
+#| echo: true
+#| eval: false
+#| warning: false
+
+start <- Sys.time()
+
+# load data:
+master_data <- readRDS("temp/signal_master_data.rds")
+master_data$y <- master_data$signal_sc
+variant_data <- master_data
+
+library(cmdstanr)
+source("https://raw.githubusercontent.com/tewilkins/mwbugs_functions/refs/heads/main/mwbugs_functions.R")
+source("code/compile_cmdstanr_model.R")
+
+# Set options for rstan:
+options(mc.cores = parallel::detectCores())
+
+af_var_big_list <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mwstr/forest_cover/af_var_big_list_229_sites.rds")
+
+af_var_big_list_2022 <- af_var_big_list
+
+# Extract only af_2022 variants from the list and convert to a data frame:
+for (i in 1:length(af_var_big_list)) {
+  af_var_big_list_2022[[i]] <- af_var_big_list[[i]][,grep("af_2022", colnames(af_var_big_list[[i]]))]
+}
+
+# Convert to dataframe:
+af_var_big_df <- do.call(rbind, af_var_big_list_2022)
+colnames(af_var_big_df) <- af_var_big_list[[1]]$af_var
+
+af_var_big_df <- af_var_big_df[which(rownames(af_var_big_df) %in% sites$sitecode_v12),] # subset to only samples in master_data
+af_var_big_df <- af_var_big_df[match(sites$sitecode_v12, rownames(af_var_big_df)),] # reorder to match master_data
+
+# Use only AF variants used in Chris' multi-taxon models:
+af_big_multi_taxon_loo <- read.csv(file = "temp/af_big_multi_taxon_loo_comparison.csv", header = TRUE, row.names = 1)
+af_var_big_df <- af_var_big_df[,c(which(colnames(af_var_big_df) == "sitecode_v12"),
+                                   which(colnames(af_var_big_df) %in% af_big_multi_taxon_loo$model))]
+
+stanfile <- "signal_beta.stan"
+
+# Loop through all AF variants and run the model for each one:
+for (i in 1:ncol(af_var_big_df)) {
+  af <- af_var_big_df[,i]
+  variant <- colnames(af_var_big_df)[i]
+  F <- scale(af)
+  
+  new_pred_site <- as.data.frame(master_data$u_site)
+  new_pred_site <- new_pred_site[,c("I","F","Q","Q2","C","T","T2","L","F_I","Q_F","Q_I","F_I_Q")]
+  
+  new_pred_site$F <- as.vector(F)
+  new_pred_site$F_I <- as.vector(F * new_pred_site$I)
+  new_pred_site$Q_F <- as.vector(new_pred_site$Q * F)
+  new_pred_site$Q_I <- as.vector(new_pred_site$Q * new_pred_site$I)
+  new_pred_site$F_I_Q <- as.vector(F * new_pred_site$I * new_pred_site$Q)
+  
+  # Apply new predictions to variant_data:
+  variant_data$u_site <- new_pred_site
+  variant_data$n_site_pred <- ncol(new_pred_site)
+  
+  print(paste0("Running model ", i, " of ", ncol(af_var_big_df)))
+  
+  # Run model in rstan:
+  compile_cmdstanr_model(stanfile, 
+                       data = variant_data, 
+                       base_name = variant,
+                       iter_sampling = 500,
+                       iter_warmup = 500,
+                       refresh = 250,
+                       draws_path = "af_big_optm/draws/",
+                       loo_path = "af_big_optm/loo/",
+                       summary_path = "af_big_optm/summary/",
+                       summary_vars = c("alpha", "phi", "sigma_site", "beta_site", "beta_obs"),
+                       loo_var = "log_lik_env")
+}
+
+cmdstanr_time <- Sys.time() - start
+
+# Get filenames for loo:
+loo_files <- list.files("af_big_optm/loo/", pattern = "*_loo.rds", full.names = TRUE)
+names(loo_files) <- gsub("_loo.rds", "", basename(loo_files))
+loo_list <- lapply(loo_files, readRDS)
+loo_af_big_signal <- loo::loo_compare(loo_list)
+saveRDS(loo_af_big_signal, "af_big_optm/loo_af_big_signal.rds")
+
+loo_time <- Sys.time() - start
+loo_time # Time difference of 11.75039 mins
+
+```
+
+### Effective imperviousness
+
+Effective imperviousness (EI) variants were generated using the same methods as in the multi-taxon models, and the SIGNAL models were run for each of the EI variants. The results are saved in `ei_optm/loo_ei_signal.rds`. As we determined an optimal weight for W based on SIGNAL score, we ran a larger number of EI variants than were run in the multi-taxon models.
+
+```{r}
+#| label: run_ei_models
+#| echo: true
+#| eval: false
+#| warning: false
+
+start <- Sys.time()
+
+# Load Stan data
+library(rstan)
+library(cmdstanr)
+source("https://raw.githubusercontent.com/tewilkins/mwbugs_functions/refs/heads/main/mwbugs_functions.R")
+source("code/compile_cmdstanr_model.R")
+source("quick_218_spp_data_assembly_for_ou_model.R")
+
+# Set options for rstan:
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+# load data:
+master_data <- readRDS("temp/signal_master_data.rds")
+master_data$y <- master_data$signal_sc
+variant_data <- master_data
+
+sites_ei_sW_W_vars <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mwstr/impervious/sites_ei_sW_W_vars.rds")
+sites_ei_sW_W_vars$sitecode_v12 <- sites$sitecode_v12[match(sites_ei_sW_W_vars$reach, sites$reach)]
+
+# chris_loo_table <- read.csv(file = "temp/ei_multi_taxon_loo_comparison.csv", header = TRUE)
+# Actually, Chris' loo table doesn't include many non-Inf Ws, so I'll just run a large number of variants and then compare the loo results to Chris' multi-taxon loo table.
+
+Ls <- c(0,1,2,4,8,16,32,64, Inf)
+sWs <- c(1, 2, 4, 8, 16, 32, 100, 200, 400, 800, 1600, 3200, Inf)
+# Ws <- c(200, 400, 800, 1600, 3200, 4800, 6400, 8000, 12800, 25600, 51200, Inf)
+Ws <- c(200, 400, 800, 1600, 3200, 4800, 6400, 8000, 12800, 25600, 51200, Inf)
+Ws <- 4800
+variant_names <- c()
+
+for (L in Ls) {
+  for (sW in sWs) {
+    for (W in Ws) {
+      variant_names <- c(variant_names, paste0("ei_L", L, "_sW", sW, "_W", W))
+    }
+  }
+}
+
+
+# ei_var_df <- sites_ei_sW_W_vars[,c(which(colnames(sites_ei_sW_W_vars) == "sitecode_v12"),
+#                                    which(colnames(sites_ei_sW_W_vars) %in% chris_loo_table$model))]
+
+ei_var_df <- sites_ei_sW_W_vars[,c(which(colnames(sites_ei_sW_W_vars) == "sitecode_v12"),
+                                   which(colnames(sites_ei_sW_W_vars) %in% variant_names))]
+
+# Which variants were not generated?
+variant_names[which(!variant_names %in% colnames(ei_var_df))]
+
+# Check for variants already run and saved in the loo folder:
+finished_variants <- gsub("_loo.rds", "", list.files("ei_optm/loo/", pattern = "*_loo.rds"))
+
+remaining_variants <- variant_names[which(!variant_names %in% finished_variants)]
+
+ei_var_df <- sites_ei_sW_W_vars[,c(which(colnames(sites_ei_sW_W_vars) == "sitecode_v12"),
+                                   which(colnames(sites_ei_sW_W_vars) %in% remaining_variants))]
+
+stanfile <- "signal_beta.stan"
+
+# Loop through all AF variants and run the model for each one:
+for (i in 2:ncol(ei_var_df)) {
+  ei <- ei_var_df[,i]
+  variant <- colnames(ei_var_df)[i]
+  I <- scale(ei)
+  
+  new_pred_site <- as.data.frame(master_data$u_site)
+  new_pred_site <- new_pred_site[,c("I","F","Q","Q2","C","T","T2","L","F_I","Q_F","Q_I","F_I_Q")]
+  
+  new_pred_site$I <- as.vector(I)
+  new_pred_site$F_I <- as.vector(new_pred_site$F * I)
+  new_pred_site$Q_F <- as.vector(new_pred_site$Q * new_pred_site$F)
+  new_pred_site$Q_I <- as.vector(new_pred_site$Q * I)
+  new_pred_site$F_I_Q <- as.vector(new_pred_site$F * I * new_pred_site$Q)
+  
+  # Apply new predictions to variant_data:
+  variant_data$u_site <- new_pred_site
+  variant_data$n_site_pred <- ncol(new_pred_site)
+  
+  print(paste0("Running model ", i-1, " of ", ncol(ei_var_df)-1))
+  
+  # Run model in rstan:
+  compile_cmdstanr_model(stanfile, 
+                       data = variant_data, 
+                       base_name = variant,
+                       iter_sampling = 500,
+                       iter_warmup = 500,
+                       refresh = 250,
+                       draws_path = "ei_optm/draws/",
+                       loo_path = "ei_optm/loo/",
+                       summary_path = "ei_optm/summary/",
+                       summary_vars = c("alpha", "phi", "sigma_site", "beta_site", "beta_obs"),
+                       loo_var = "log_lik_env")
+}
+
+cmdstanr_time <- Sys.time() - start
+cmdstanr_time
+
+# Get filenames for loo:
+loo_files <- list.files("ei_optm/loo/", pattern = "*_loo.rds", full.names = TRUE)
+names(loo_files) <- gsub("_loo.rds", "", basename(loo_files))
+loo_list <- lapply(loo_files, readRDS)
+loo_ei_signal <- as.data.frame(loo::loo_compare(loo_list))
+
+loo_ei_signal$diff_by_se <- loo_ei_signal$elpd_diff/loo_ei_signal$se_diff
+loo_ei_signal$diff_by_se[1] <- 0
+loo_ei_signal$perc_bad_pareto_k <- NA
+for(i in 1:nrow(loo_ei_signal)){
+  looi <- loo_list[[i]]
+  looi_ks <- looi$diagnostics$pareto_k
+  loo_ei_signal$perc_bad_pareto_k[i] <- 100*sum(looi_ks > 0.7)/length(looi_ks)
+}
+loo_ei_signal$looic_diff <- loo_ei_signal$looic - loo_ei_signal$looic[1]
+
+ei_vars <- strsplit(rownames(loo_ei_signal),"_")
+ei_Ls <- as.numeric(gsub("L","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",2))))
+ei_Ls <- append(ei_Ls, Inf, after = which(rownames(loo_ei_signal) == "ti") - 1)
+ei_sWs <- as.numeric(gsub("sW","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",3))))
+ei_sWs <- append(ei_sWs, Inf, after = which(rownames(loo_ei_signal) == "ti") - 1)
+ei_Ws <- as.numeric(gsub("W","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",4))))
+ei_Ws <- append(ei_Ws, Inf, after = which(rownames(loo_ei_signal) == "ti") - 1)
+loo_ei_signal$L <- ei_Ls
+loo_ei_signal$sW <- ei_sWs
+loo_ei_signal$W <- ei_Ws
+
+saveRDS(loo_ei_signal, "ei_optm/loo_ei_signal.rds")
+
+loo_time <- Sys.time() - start
+loo_time # Time difference of 24.15668 mins
+
+```
+
+
+```{r}
+#| label: loo_af_full_and_pruned_models
+#| eval: false
+#| echo: false
+
+# Get filenames for loo:
+# full network(1)
+loo_files_1 <- list.files("af_optm/loo/", pattern = "*_loo.rds", full.names = TRUE)
+names(loo_files_1) <- paste0("full_", gsub("_loo.rds", "", basename(loo_files_1)))
+loo_list_1 <- lapply(loo_files_1, readRDS)
+
+# pruned network(2)
+loo_files_2 <- list.files("af_big_optm/loo/", pattern = "*_loo.rds", full.names = TRUE)
+names(loo_files_2) <- paste0("pruned_", gsub("_loo.rds", "", basename(loo_files_2)))
+loo_list_2 <- lapply(loo_files_2, readRDS)
+
+loo_list <- lapply(c(loo_files_1, loo_files_2), readRDS)
+
+loo_af_both_signal <- as.data.frame(loo::loo_compare(loo_list))
+
+```
+
+## Results
+
+All model variants with LOO-IC differences of less than 8 are considered plausible, as well as those with a LOO-IC difference of less than 8 and a standard error ratio of less than 2. The plausible ranges for L and W are shown in the figure above.
+
+### SIGNAL AF variants with the full network
+
+```{r}
+#| label: fig-signal_af_loo
+#| echo: false
+#| eval: true
+#| fig-width: 7
+#| fig-height: 7
+#| fig-cap: "A. contour plot of difference in LOO-IC from the best model (ΔLOO-IC), as a function of L and W derived from the full stream map. Each point represents ΔLOO-IC from a trial variant. The optimal variant was L = 1 m and W = 400 m. B. ΔLOO-IC across AF variants of W = 200 m with varying L (1 - 64 m). C. ΔLOO-IC across AF variants of L = 1 m with varying W (200 - 1600 m)."
+
+loo_af_signal <- as.data.frame(readRDS("af_optm/loo_af_signal.rds"))
+loo_af_big_signal <- as.data.frame(readRDS("af_big_optm/loo_af_big_signal.rds"))
+
+# Extract the first number after l in the rownames of loo_af_signal and loo_af_big_signal to get the overland attenuation:
+loo_af_signal$L <- as.numeric(gsub(".*l([0-9]+).*", "\\1", rownames(loo_af_signal)))
+loo_af_big_signal$L <- as.numeric(gsub(".*l([0-9]+).*", "\\1", rownames(loo_af_big_signal)))
+
+loo_af_signal$W <- as.numeric(gsub(".*w([0-9]+).*", "\\1", rownames(loo_af_signal)))
+loo_af_big_signal$W <- as.numeric(gsub(".*w([0-9]+).*", "\\1", rownames(loo_af_big_signal)))
+
+# Get LOOIC diff:
+loo_af_signal$looic_diff <- loo_af_signal$looic - min(loo_af_signal$looic)
+loo_af_big_signal$looic_diff <- loo_af_big_signal$looic - min(loo_af_big_signal$looic)
+
+Ls <- c(1,2,4,6,8,10)
+Ws <- c(c(400,600,800,1000, 1200, 1600))  
+
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(Ws))
+for(i in 1:length(Ls)){
+  for(j in 1:length(Ws)){
+    if(length(which(loo_af_signal$L == Ls[i] & loo_af_signal$W == Ws[j])) > 0)
+    elpd_mat[i,j] <- loo_af_signal$looic_diff[which(loo_af_signal$L == Ls[i] & loo_af_signal$W == Ws[j])]
+  }
+}
+
+par(mar = c(4,4,1,1))
+layout(matrix(c(1,1,2,3), 2,2, byrow = TRUE), widths = c(12,12), heights = c(12,8))
+contour(Ws, log(Ls), t(elpd_mat), ylab = "L (m)", xlab = "W (km)", axes = FALSE, levels = c(2,4,6,8,10,12,14))
+# points(c(1600,1800),log(c(1,1)), pch = 3, col = "red")
+# Add points covering each of the trail combinations of L and W:
+for (i in 1:length(Ls)) {
+  for (j in 1:length(Ws)) {
+    if(length(which(loo_af_signal$L == Ls[i] & loo_af_signal$W == Ws[j])) > 0) {
+      points(Ws[j], log(Ls[i]), pch = 1)
+    }
+  }
+}
+
+optimal_L <- loo_af_signal$L[which.min(loo_af_signal$looic_diff)]
+optimal_W <- loo_af_signal$W[which.min(loo_af_signal$looic_diff)]
+
+plausible_Ls <- loo_af_signal$L[which(loo_af_signal$looic_diff < 4)]
+plausible_Ws <- loo_af_signal$W[which(loo_af_signal$looic_diff < 4)]
+
+#points(plausible_Ws,log(plausible_Ls), pch = 3, col = "blue")
+points(optimal_W,log(optimal_L), pch = 3, col = "red")
+
+axis(2, at = log(Ls), labels = Ls); box(); # title("B.", adj = 0)
+axis(1, at = seq(200,2200,200), labels = seq(200,2200,200)/1000, las= 1)
+title(main = "A.", adj = 0)
+
+plot(log(Ls),elpd_mat[,which(Ws == 400)], type ="l",
+     xlab = "L (m)", ylab = expression(Delta * " LOO-IC"), axes = FALSE)
+axis(1, at = log(c(1,2,4,8)), labels = c(1,2,4,8)); axis(2, las = 1); box(bty = "l")
+# abline(h = c(5), lty = 3)
+title(main = "B.", adj = 0)
+title(main = "W = 400 m", adj = 0.95)
+
+plot(Ws,elpd_mat[which(Ls == 1),], type ="l",
+     xlab = "W (km)", ylab = expression(Delta * " LOO-IC"), axes = FALSE)
+axis(1, at = seq(200,2200,200), labels = seq(200,2200,200)/1000, las= 1)
+axis(2); box(bty = "l")
+# abline(h = c(5), lty = 3)
+title(main = "C.", adj = 0)
+title(main = "L = 1 m", adj = 0.95)
+
+loo_af_signal$se_diff_ratio <- loo_af_signal$elpd_diff / loo_af_signal$se_diff
+loo_af_signal$plausible <- loo_af_signal$looic_diff < 8 | loo_af_signal$se_diff_ratio < 2
+
+af_L_signal_plausible_range <- range(loo_af_signal$L[which(loo_af_signal$plausible)])
+af_W_signal_plausible_range <- range(loo_af_signal$W[which(loo_af_signal$plausible)])
+
+
+```
+
+The optimal AF variant for SIGNAL was found to be L = 1 m (plausible range: 1 - 10 m) and W = 400 m (plausible range: 400 - 1600 m). ΔLOO-IC increased with increasing L and W, suggesting that the optimal AF variant for SIGNAL is likely to be one of the smaller variants. However, All AF variants trialed were within 8 LOO-IC units, or within 2 ΔELPD/ΔSE units, indicating that all AF variants were plausible with the full stream network. Thus, the results suggest that SIGNAL is not sensitive to the choice of AF variant, and that the optimal AF variant for SIGNAL is not determined to be different to the multi-taxon model. 
+
+### SIGNAL AF variants using the pruned network
+
+```{r}
+#| label: fig-signal_af_loo_big
+#| echo: false
+#| eval: true
+#| fig-cap: "A. contour plot of difference in LOO-IC from the best model (ΔLOO-IC), as a function of L and W derived from the pruned stream map. Each point represents ΔLOO-IC from a trial variant. The optimal variant was L = 1 m and W = 200 m. B. ΔLOO-IC across AF variants of W = 200 m with varying L (1 - 64 m). C. ΔLOO-IC across AF variants of L = 1 m with varying W (200 - 1600 m)."
+#| fig-width: 7
+#| fig-height: 7
+#| message: false
+
+loo_af_signal <- as.data.frame(readRDS("af_optm/loo_af_signal.rds"))
+loo_af_big_signal <- as.data.frame(readRDS("af_big_optm/loo_af_big_signal.rds"))
+
+# Extract the first number after l in the rownames of loo_af_signal and loo_af_big_signal to get the overland attenuation:
+loo_af_signal$L <- as.numeric(gsub(".*l([0-9]+).*", "\\1", rownames(loo_af_signal)))
+loo_af_big_signal$L <- as.numeric(gsub(".*l([0-9]+).*", "\\1", rownames(loo_af_big_signal)))
+
+loo_af_signal$W <- as.numeric(gsub(".*w([0-9]+).*", "\\1", rownames(loo_af_signal)))
+loo_af_big_signal$W <- as.numeric(gsub(".*w([0-9]+).*", "\\1", rownames(loo_af_big_signal)))
+
+# Get LOOIC diff:
+loo_af_signal$looic_diff <- loo_af_signal$looic - min(loo_af_signal$looic)
+loo_af_big_signal$looic_diff <- loo_af_big_signal$looic - min(loo_af_big_signal$looic)
+
+loo_af_big_signal$looic_ratio <- loo_af_big_signal$looic_diff / (2*loo_af_big_signal$se_diff)
+
+Ls <- c(0,1,2,4,8,16,32,64)
+Ws <- c(200, 400 ,800, 1600)
+
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(Ws))
+for(i in 1:length(Ls)){
+  for(j in 1:length(Ws)){
+    if(length(which(loo_af_big_signal$L == Ls[i] & loo_af_big_signal$W == Ws[j])) > 0)
+    elpd_mat[i,j] <- loo_af_big_signal$looic_diff[which(loo_af_big_signal$L == Ls[i] & loo_af_big_signal$W == Ws[j])]
+  }
+}
+
+optimal_L <- loo_af_big_signal$L[which.min(loo_af_big_signal$looic_diff)]
+optimal_W <- loo_af_big_signal$W[which.min(loo_af_big_signal$looic_diff)]
+
+plausible_Ls <- loo_af_big_signal$L[which(loo_af_big_signal$looic_diff < 4)]
+plausible_Ws <- loo_af_big_signal$W[which(loo_af_big_signal$looic_diff < 4)]
+
+par(mar = c(4,4,2,1))
+layout(matrix(c(1,1,2,3), 2,2, byrow = TRUE), widths = c(12,12), heights = c(12,8))
+contour(Ws, log(c(0.5, Ls[2:length(Ls)])), t(elpd_mat), ylab = "L (m)", xlab = "W (km)", axes = FALSE, levels = seq(2, 16, 2))
+# abline(h = log(1), v = 1600, lty = 3)
+# points(c(1600,1800),log(c(1,1)), pch = 3, col = "red")
+# Add points for all trials:
+for (i in 1:length(Ls)) {
+  for (j in 1:length(Ws)) {
+    if(length(which(loo_af_big_signal$L == Ls[i] & loo_af_big_signal$W == Ws[j])) > 0) {
+      points(Ws[j], log(c(0.5, Ls[2:length(Ls)])[i]), pch = 1)
+    }
+  }
+}
+# points(plausible_Ws,log(plausible_Ls), pch = 3, col = "blue")
+points(optimal_W,log(optimal_L), pch = 3, col = "red")
+
+axis(2, at = log(Ls), labels = Ls); box(); # title("B.", adj = 0)
+axis(1, at = seq(200,2000,200), labels = seq(200,2000,200)/1000, las= 1)
+title(main = "A.", adj = 0)
+
+plot(log(Ls),elpd_mat[,which(Ws == 200)], type ="l",
+     xlab = "L (m)", ylab = expression(Delta * " LOO-IC"), axes = FALSE)
+axis(1, at = log(Ls), labels = Ls); axis(2, las = 1); box(bty = "l")
+# abline(h = c(4), lty = 3)
+title(main = "B.", adj = 0)
+title(main = "W = 200 m", adj = 0.95)
+
+plot(Ws,elpd_mat[which(Ls == 1),], type ="l",
+     xlab = "W (km)", ylab = expression(Delta * " LOO-IC"), axes = FALSE)
+axis(1, at = seq(200,2200,200), labels = seq(200,2200,200)/1000, las= 1)
+axis(2); box(bty = "l")
+# abline(h = c(4), lty = 3)
+title(main = "C.", adj = 0)
+title(main = "L = 1 m", adj = 0.95)
+
+loo_af_big_signal$se_diff_ratio <- abs(loo_af_big_signal$elpd_diff) / loo_af_big_signal$se_diff
+loo_af_big_signal$plausible <- loo_af_big_signal$looic_diff < 8 | loo_af_big_signal$se_diff_ratio < 2
+
+af_big_L_signal_plausible_range <- range(loo_af_big_signal$L[which(loo_af_big_signal$looic_diff < 4)]) # [1] 0 8
+af_big_W_signal_plausible_range <- range(loo_af_big_signal$W[which(loo_af_big_signal$looic_diff < 4)]) # [1] 200 800
+
+# sum(as.numeric(loo_af_big_signal$plausible))/nrow(loo_af_big_signal) # 0.75
+
+```
+
+Using the pruned network, the optimal AF variant for SIGNAL was found to be L = 1 m (plausible range: 0 - 8 m) and W = 200 m (plausible range: 200 - 800 m). ΔLOO-IC increased with increasing L and W, suggesting the true optimal AF variant for SIGNAL is likely to be close to this variant. Furthermore, the optimal L and W values for SIGNAL were found to be the same as those for the multi-taxon model, suggesting that the influence of small stream mapping influences the optimal AF variant for both multi-taxon occurrence and SIGNAL score models. However, only 78% of the AF variants trialed were within 8 LOO-IC units, or within 2 ΔELPD/ΔSE units, indicating that most AF variants were equally plausible with the pruned stream network. In comparison to the full stream network, this suggests that SIGNAL is more sensitive to the choice of AF variant when using the pruned stream network, but is still less suited for hyperparameter tuning than the multi-taxon model. 
+
+### SIGNAL EI variants
+
+```{r}
+#| label: fig-ei_elpds_signal
+#| fig-width: 8
+#| fig-height: 4
+#| message: false
+#| echo: false
+#| fig-cap: "A. contour plot of difference in LOO-IC from the best model (ΔLOO-IC), as a function of L and sW (distance along small, unsampleable streams) with W = Inf (i.e. no attenuation along large streams). Each point represents ΔLOO-IC from a trial variant. The optimal variant was L = 1 m, sW = 1600 m, and W = 4800 m. B. ΔLOO-IC for three combinations of L and sW with varying W."
+
+loo_ei_signal <- readRDS("ei_optm/loo_ei_signal.rds")
+
+# recalculate the LOOIC differences to be relative to the best W = Inf model:
+loo_ei_signal$looic_diff <- loo_ei_signal$looic - min(loo_ei_signal$looic)
+
+Ls <- unique(loo_ei_signal$L[loo_ei_signal$L != Inf]); Ls <- Ls[order(Ls)]; 
+sWs <- unique(loo_ei_signal$sW[loo_ei_signal$sW != Inf]); sWs <- sWs[order(sWs)];
+
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(sWs))
+for(i in 1:length(Ls)){
+  for(j in 1:length(sWs)){
+    if(sum(loo_ei_signal$L == Ls[i] & loo_ei_signal$sW == sWs[j] & loo_ei_signal$W == 4800) > 0)
+      elpd_mat[i,j] <- loo_ei_signal$looic_diff[loo_ei_signal$L == Ls[i] & 
+                                                     loo_ei_signal$sW == sWs[j] & 
+                                                     loo_ei_signal$W == 4800]
+  }
+}
+
+par(mfrow = c(1,2), mar = c(4,4,1,0))
+contour(log(sWs), log(Ls + 1), t(elpd_mat), ylab = "L (m)", 
+        xlim = log(c(2,3500)),
+        xlab = "sW (m)", axes = FALSE, levels = c(2,4,6,8,10,12))
+# points(log(4),log(1+1), pch = 24, bg = "lightblue")
+# points(log(8),log(2+1), pch = 21, bg = "grey")
+# points(log(16),log(4+1), pch = 25, bg = "red")
+xticks <- c(4,8,16,32,64,125,250,500,1000,2000,3200)
+axis(2, at = log(c(0,1,2,4,8,16,32,64) + 1), labels = c(0,1,2,4,8,16,32,64), las = 1, cex.axis = 0.8); 
+axis(1, at = log(xticks), labels = xticks, las = 1, cex.axis = 0.8) ; box(bty = "l")
+# Add points for each trial combination of L and sW:
+for (i in 1:length(Ls)) {
+  for (j in 1:length(sWs)) {
+    if(length(which(loo_ei_signal$L == Ls[i] & loo_ei_signal$sW == sWs[j] & loo_ei_signal$W == 4800)) > 0) {
+      points(log(sWs[j]), log(Ls[i] + 1), pch = 1)
+    }
+  }
+}
+title(main = "A.", adj = 0)
+title(main = "W = 4.8 km", adj = 0.95)
+
+# recalculate the LOOIC differences to be relative to the best W = Inf model:
+loo_ei_signal$looic_diff <- loo_ei_signal$looic - min(loo_ei_signal$looic)
+
+Ws_16 <- loo_ei_signal[grep("ei_L16_sW1600_",rownames(loo_ei_signal)),]
+Ws_8 <- loo_ei_signal[grep("ei_L1_sW4_",rownames(loo_ei_signal)),]
+Ws_1 <- loo_ei_signal[grep("ei_L1_sW1600_",rownames(loo_ei_signal)),]
+# Ws_1 <- Ws_1[Ws_1$W != "4800",]  # unnecessary out of order point
+# Reorder Ws_1 so that the line points are connected along the increasing W values:
+Ws_1 <- Ws_1[order(Ws_1$W),]
+Ws_16 <- Ws_16[order(Ws_16$W),]
+Ws_8 <- Ws_8[order(Ws_8$W),]
+# # Adjust Ws_16 so that the delta loo_ics are anchored on (the more optimal Ws_1)
+# Ws_16$looic_diff <- Ws_16$looic_diff + (Ws_16$looic[1] - Ws_1$looic[1])
+
+plot(log(Ws_16$W[Ws_16$W != Inf]), Ws_16$looic_diff[Ws_16$W != Inf], type = "b", 
+     xlim = log(c(200,1e5)), ylim = c(0,60), axes = FALSE, xlab = "W (km)", 
+     ylab = expression(Delta * " LOO-IC"), pch = 21, bg = "red")
+lines(log(Ws_1$W[Ws_1$W != Inf]), Ws_1$looic_diff[Ws_1$W != Inf], type = "b",
+      pch = 21, bg = "lightblue")
+lines(log(Ws_16$W[Ws_16$W != Inf]), Ws_16$looic_diff[Ws_16$W != Inf], type = "b",
+      pch = 21, bg = "red")
+lines(log(Ws_8$W[Ws_8$W != Inf]), Ws_8$looic_diff[Ws_8$W != Inf], type = "b",
+      pch = 21, bg = "grey")
+points(log(1e5),  Ws_16$looic_diff[Ws_16$W == Inf], pch = 24, bg = "red")
+points(log(1e5),  Ws_1$looic_diff[Ws_1$W == Inf], pch = 25, bg = "lightblue")
+
+axis(1, at = log(c(400,1600,6400,25600,1e5)), 
+     labels = c(c(0.4,1.6,6.4,25.6,Inf)), cex.axis = 0.8)
+axis(2, las = 1, cex.axis = 0.8); box(bty="l")
+legend("topright", pch = 21, pt.bg = c("lightblue", "red", "grey"),
+       legend = c(paste("L", Ws_1$L[1], "m,", "sW", Ws_1$sW[1], "m"),
+                  paste("L", Ws_16$L[1], "m,", "sW", Ws_16$sW[1], "m"),
+                  paste("L", Ws_8$L[1], "m,", "sW", Ws_8$sW[1], "m")), cex = 0.75)
+title(main = "B.", adj = 0)
+
+# ei_vars <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mwstr/impervious/sites_ei_sW_W_vars.rds")
+# min(cor(ei_vars[c("ei_L2_sW8_WInf","ei_L2_sW16_WInf","ei_L2_sW32_WInf","ei_L1_sW8_WInf",
+#                   "ei_L1_sW16_WInf","ei_L1_sW32_WInf","ei_L8_sW8_WInf","ei_L8_sW16_WInf",
+#                   "ei_L8_sW32_WInf","ei_L4_sW8_WInf","ei_L4_sW16_WInf","ei_L4_sW32_WInf")]))
+# # 0.9998626.  
+
+loo_ei_signal$se_diff_ratio <- abs(loo_ei_signal$elpd_diff) / loo_ei_signal$se_diff
+loo_ei_signal$plausible <- loo_ei_signal$looic_diff < 8 | loo_ei_signal$se_diff_ratio < 2
+
+sW_plausible_range <- range(loo_ei_signal$sW[loo_ei_signal$plausible]) # [1]   1 Inf
+W_plausible_range <- range(loo_ei_signal$W[loo_ei_signal$plausible])   # [1] 1600  Inf
+L_plausible_range <- range(loo_ei_signal$L[loo_ei_signal$plausible])   # [1]  1 64
+
+# Comparing to multi-taxon model plausible ranges:
+loo_ei_multitaxon <- read.csv(file = "temp/ei_multi_taxon_loo_comparison.csv", header = TRUE, row.names = 1)
+loo_ei_multitaxon$se_diff_ratio <- abs(loo_ei_multitaxon$elpd_diff) / loo_ei_multitaxon$se_diff
+loo_ei_multitaxon$plausible <- loo_ei_multitaxon$looic_diff < 8 | loo_ei_multitaxon$se_diff_ratio < 2
+
+sW_plausible_range_multitaxon <- range(loo_ei_multitaxon$sW[loo_ei_multitaxon$plausible]) # [1]   4 16
+L_plausible_range_multitaxon <- range(loo_ei_multitaxon$L[loo_ei_multitaxon$plausible])   # [1]  1 4
+
+```
+
+For EI, the optimal variant was sW = 1600 m (plausible range 1 m - Inf.), L = 1 m (plausible range: 1 m - 64 m), and W = 4800 m (plausble range: 1600 m - Inf.). This differed slightly to the optimal variant in the multi-taxon model, which was sW = 4 m (plausible range: 4 - 16 m), L = 1 m (plausible range: 1 - 4 m), and W = Inf. The open contour in Panel A suggests that the optimal L is potentially greater than 64 m, but still suggests that weighting by overland distance will improve prediction over unweighted total imperviousness. Similarly, the plausible range of sW included all modelled variants, but ΔLOO-IC trended towards 0 as sW increased. The plausible ranges for L and sW included the optimum determined by the multi-taxon model, though this may be attributed to low discrimination between models with SIGNAL rather than a true reflection of optimal weights. Panel B shows that weighting W along large streams is important for SIGNAL for plausible variants of sW and L, which may be due to the fact that the SIGNAL model is developed specifically to measure water quality impairment, and therefore the effects of imperviousness on SIGNAL are possibly more localized. 
+
+## Conclusions
+
+### AF
+
+Attenuation of overland forest cover did not differ between the multi-taxon model and SIGNAL: the optimal variant was L = 1 m in both, for both the full and pruned stream networks. The pruned network models suggested a narrower plausible range of L and W, and larger differences in LOO-IC between variants, indicating greater sensitivity to the choice of AF variant. Two factors may explain this; First, SIGNAL was developed using sampleable streams, so the pruned network better represents the streams the score was designed for. Second, collapsing species occurrences into a single family-level score, and then a single site score, dampens SIGNAL’s sensitivity to AF variants. This dampening is likely stronger in the full network, where small streams such as headwaters and hyporheic streams are included. These streams tend to support many species within the same family, both within and between sites, so aggregating species to family obscures true biological differences among variants. Pruning small streams from the dataset likely removes the noise introduced by small-stream mapping, which is consistent with our observation that SIGNAL score models were able to discriminate between AF variants more effectively in the pruned network.
+
+In both full and pruned networks, the optimal L and W from SIGNAL differed from those reported by Walsh & Webb (2014), which were L = 35 m and W = 1000 m. Because our study was conducted in the same area, used a comparable multi-model inference method, and used the same SIGNAL endpoint, we expected similar results. Several differences may account for the discrepancy; Walsh & Webb (2014) derived their stream network from a 25 m DEM, whereas ours came from a 10 m DEM, which may give greater influence to forest cover close to the stream. Our predictor set also differed; most notably, we did not model antecedent discharge, which Walsh & Webb (2014) found to be important. If the temporal effects of antecedent flow on SIGNAL outweigh the spatial effects of forest cover, the optimal L and W could differ between studies. An interaction between antecedent flow and forest cover could have the same effect, with the temporal influence of flow extending the spatial influence of forest cover.
+
+### EI
+
+Overall, the SIGNAL models were broadly consistent with the multi-taxon model but lacked the discrimination to identify optimal variants of L, sW, and W within a practical range. SIGNAL favoured weighting by in-stream distance along large streams (W), whereas the multi-taxon model did not. SIGNAL also returned a far wider plausible range of sW than the multi-taxon model. This may reflect that SIGNAL is a water quality metric rather than a direct measure of assemblage composition, and is therefore more sensitive to local effects of imperviousness.
+
+Crucially, the plausible range of both W and sW included unweighted imperviousness (W = Inf, sW = Inf), which is equivalent to no in-stream attenuation. SIGNAL therefore provides no clear evidence that weighting by in-stream distance along large or small streams improves prediction, because an unweighted model cannot be ruled out. In contrast, the multi-taxon model supported weighting by in-stream distance along small streams, with a very narrow plausible range of half-decay distances (sW = 4 m). This suggests that SIGNAL is less sensitive than the multi-taxon model to the in-stream attenuation of imperviousness, which is consistent with the lower discriminating power of SIGNAL discussed below.
+
+### SIGNAL vs multi-taxon modelling for hyperparameter optimisation
+
+The biggest difference in multi-model selection between the multi-taxon model and SIGNAL model was their ability to discriminate between variants, as shown by the differences in ΔLOO-IC between variants of AF and EI. The multi-taxon model identified a very small range of optimal half-decay distances for all AF and EI hyperparameters, while most models fitted with SIGNAL scores were equally plausible; in the full network, all variants were equally plausible. This is expected given how LOO-IC is calculated: it is based on the likelihood of the data given the model, and the multi-taxon model has far more data points (every species occurrence) than SIGNAL (one score per site). The multi-taxon model is therefore more sensitive to changes in AF and EI hyperparameters and is better suited to optimisation.

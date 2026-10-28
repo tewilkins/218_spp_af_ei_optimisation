@@ -1,0 +1,54 @@
+```{r}
+#| label: tbl-predictor_variables
+#| eval: true
+#| echo: false
+#| tbl-cap: "Predictor variables used in the multi-taxon and SIGNAL score models, including the variable name, description, and units of measurement. The predictor set was selected based on the model performance of multi-taxon models, which were fitted with a joint species distribution model (JSDM) framework. The final predictor set included the main effects of attenuated forest cover (F), effective impervious surface cover (I), mean annual rainfall runoff (Q), catchment area (C), degree of upstream (D), and mean annual maximum daily temperature (T)."
+
+predictor_variables <- data.frame(
+  pred_name = c(
+    "Presence of riffle habitats",
+    "Effective impervious surface cover",
+    "Attenuated forest cover",
+    "Mean annual rainfall runoff",
+    "Catchment area",
+    "Degree of upstream regulation",
+    "Temperature"
+  ),
+  abbreviation = c("Hab", "EI", "AF", "MeanQ", "CA", "DoR", "Temp"),
+  units = c("1 (presence) or 0 (absence)", "Proportion (%)", "Proportion (%)", "mm", "km²", "km", "°C"),
+  model_notation = c("H", "I", "F", "Q", "C", "D", "T"),
+  Description = c(
+    "The presence of a riffle where a sample was collected, represented as a binary variable (1 = riffle present, 0 = riffle absent).",
+    "The proportion of impervious surface cover within the catchment, attenuated by in-stream and overland distance. This measure accounts for attenuating effects from overland and in-stream flow from the most-downhill point , while directly draining flow channels were treated as transmitting the full effect of imperviousness to receiving streams (full weighting). Total imperviousness was derived from Nearmap AI polygon data of concrete, ashoalt, roofs, council stormwater pipes and their points of discharge, within each 25m² gridcell from 2018 Nearmap imagery.",
+    "The proportion of forest cover within the catchment, attenuated by in-stream and overland distance. Weights of both to-stream (L) and downstream (W) distance decay exponentially, for which Walsh and Webb (2014) determined half-decay distances of L = 35m and W = 1000m optimised prediction of SIGNAL score. Total forest cover was derived from Nearmap AI polygon data of medium and high vegetation (>2m) within each 25m² gridcell from 2018 Nearmap imagery.",
+    "The mean annual rainfall runoff within the catchment, equal to the yearly accumulation of surface water runoff (ML/year) per km² of catchment area, and correlates strongly with natural discharge in the absence of anthropogenic influences. Mean discharge depth was calculated using daily runoff data (mm/day) from 1911-2022, within 5km² gridcells.",
+    "The total catchment area upslope of the sampling site, measured using a 10 m grid Digital Elevation Model",
+    "The degree of upslope flow impedence to the sampling site, given by the capacity and quantity of upslope dams along a stream reach.",
+    "The annual mean daily maximum air temperature at the sampling site. This was derived from the Bureau of Meteorology's (BoM) gridded climate data for Australia, which provides daily maximum temperature data at a 0.05° resolution (approximately 5 km) for the period 1990-2020. The mean annual maximum daily temperature was calculated for each sampling site using the BoM's Climate Data Online service."
+  ),
+  Source = c(
+    "Not applicable",
+    "Walsh & Kunapo 2009",
+    "Walsh & Webb 2014",
+    "Frost & Shroki (2021); prepared by Walsh (2023)",  
+    "Walsh (2023)",
+    "Walsh (2023)",
+    "Bureau of Meteorology (2023), prepared by Walsh (2023)")
+)
+
+colnames(predictor_variables) <- c(
+  "Predictor name",
+  "Abbreviation",
+  "Unit",
+  "Model Term",
+  "Description",
+  "Source"
+)
+
+ft <- table_for_word(predictor_variables)
+
+ft
+  
+  
+
+```

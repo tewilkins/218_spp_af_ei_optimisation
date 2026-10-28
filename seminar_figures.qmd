@@ -1,0 +1,625 @@
+---
+title: "Seminar figures"
+format: html
+editor: visual
+---
+
+## Land use raster plots:
+
+```{r}
+
+# Download required databases (mwbugs and mwstr) to local directory (local_dir):
+if (!dir.exists("gpkg")) dir.create("gpkg") # Safely creates a new folder if it doesn't already exist
+urls <- c("https://tools.thewerg.unimelb.edu.au/mwbugs/data/mwbugs_db_v2.1.1.gpkg", # 50.7MB
+          "https://tools.thewerg.unimelb.edu.au/mwstr/data/mwstr_v1.3.1.gpkg")      # 780.0MB
+options(timeout = 900) # Increases time to download files through R - default timeout is 60 seconds.
+for (url in urls){
+  if (!file.exists(paste0("gpkg/", basename(url)))){
+    print(paste("Downloading", basename(url)))
+    download.file(
+      url, 
+      destfile = paste0("gpkg/", basename(url)), # file path where the downloaded file is to be saved.
+      mode = "wb") # Code written to download binary files must use mode = "wb" (or "ab")
+  }
+}
+
+source("~/uomShare/wergStaff/ChrisW/mwstr_v13/mwstr_network_functions.R")
+
+# prepare_af_site_data(mwstr_connection, tiff_dir):
+# mwstr_connection: connection to the melbourne water stream network database from DBI
+# tiff_dir: directory
+
+tiff_dir <- "~/uomShare/wergStaff/ChrisW/mwstr_v13/"
+str_db <- DBI::dbConnect(RSQLite::SQLite(), "gpkg/mwstr_v1.3.1.gpkg")
+
+# 1: Prepare the AF data for calculation (compile raster stack from subcs table)
+prepared_data <- prepare_af_site_data(str_db, tiff_dir)
+
+# 2: Calculate AF for a gien reach or sitecode
+sitecode_or_reach <- "LIS_453g"
+dL = 35 
+dW = 1000
+
+list2env(prepared_data,environment())
+
+# take the site-level character identifier
+last_char <- substr(sitecode_or_reach,
+                    nchar(sitecode_or_reach),nchar(sitecode_or_reach))
+# reach code for site
+reachi <- ifelse(last_char %in% 0:9, sitecode_or_reach,
+                 substr(sitecode_or_reach,1,nchar(sitecode_or_reach)-1))
+
+# site code for site
+sitei <- subcs$site[subcs$reach == reachi]
+
+# Calculate the proportion of the reach that is upstream of the site:
+ppn_us <- ifelse(last_char %in% 0:9,
+                 0, (match(last_char,letters[1:10]) - 1) * 0.1)
+
+# Distance upstream in meters:
+m_dus <- ppn_us * subcs$tot_length_m[subcs$site == sitei]
+
+# calculate distance to outlet for site i:
+d2oli <-  subcs$d2ol_pp[subcs$site == sitei] + m_dus
+
+# All upstream subcatchments:
+allusi <- subcs$site[igraph::subcomponent(subcs_ig, as.character(sitei), "in")]
+allusi_d2ol <- subcs$d2ol_pp[match(allusi,subcs$site)]
+  # See code block in c6-trees (form L365) of mwstr-manual for justification
+
+# maximum upstream distance for AF calc: 
+max_us <- 10 * dW  # This was 6 * dW in version 1.3.1: very little difference
+
+# set boundary for upstream based on 16 * dW:
+allusi_within_max_us <- allusi[allusi_d2ol < d2oli + max_us]
+# Doesn't exclude upstream subcatchments in this case
+
+# restrict subcatchment to gridcells within 16 * dW:
+cati <- subcs[subcs$site %in% allusi_within_max_us,]
+# terra::plot(cati)
+# create forest spatial subset from raster stack 
+rasti <- terra::crop(trees_4, cati, mask = TRUE)
+# terra::plot(rasti)
+# Set null values for new forest cover data imputation (i.e., calculated AF)
+# cuts out sites along the reach before the current site (everything before j)
+terra::values(rasti$d2ol)[terra::values(rasti$d2ol) < d2oli] <- NA
+
+# mask i
+# some edge inconsistencies
+mski <- rasti$site
+# terra::plot(mski)
+# remove sites not in allusi_within_max_us
+terra::values(mski)[!terra::values(mski) %in% allusi_within_max_us] <- NA
+# terra::plot(rasti)
+# 
+msk <- terra::ifel(mski, NA, rasti$d2ol)
+rasti <- terra::mask(rasti, msk)
+rasti <- terra::trim(rasti)
+rasti$d2ol <- rasti$d2ol - rasti$d2str - d2oli 
+  #d2str not substracted from d2ol in version 1.3.1 and earlier. It is necessary to separate water distance from land distance
+  # see ~/git/mwstr_impervious_estimation/forest cover metric estimation.qmd L113 for equivalent buffer calculation
+weight <- exp(log(0.5)*rasti$d2str/dL)*exp(log(0.5)*rasti$d2ol/dW)
+af_series <- c(af_1750 = NA, af_2006 = NA, af_2018 = NA, af_2022 = NA)
+for(k in 1:4){
+    # If no tree-cover at all, af raster is only NAs, so set to zero.
+    af_series[k] <- ifelse(is.na(terra::global(rasti[[k+3]] * weight, fun= sum, na.rm = TRUE)$sum),
+                           0,
+                           terra::global(rasti[[k+3]] * weight, fun= sum, na.rm = TRUE)$sum/
+                             terra::global(weight*25, fun = sum, na.rm = TRUE)$sum)
+}
+gc()
+# af_series
+
+
+```
+
+```{r}
+
+# ============================================================
+# Plot attenuation-weighted forest cover for four AF variants
+# ============================================================
+
+library(DBI)
+library(RSQLite)
+library(terra)
+library(igraph)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(patchwork)
+
+# ------------------------------------------------------------
+# 1. Prepare data
+# ------------------------------------------------------------
+
+# Download required databases (mwbugs and mwstr) to local directory (local_dir):
+if (!dir.exists("gpkg")) dir.create("gpkg") # Safely creates a new folder if it doesn't already exist
+urls <- c("https://tools.thewerg.unimelb.edu.au/mwbugs/data/mwbugs_db_v2.1.1.gpkg", # 50.7MB
+          "https://tools.thewerg.unimelb.edu.au/mwstr/data/mwstr_v1.3.1.gpkg")      # 780.0MB
+options(timeout = 900) # Increases time to download files through R - default timeout is 60 seconds.
+for (url in urls){
+  if (!file.exists(paste0("gpkg/", basename(url)))){
+    print(paste("Downloading", basename(url)))
+    download.file(
+      url, 
+      destfile = paste0("gpkg/", basename(url)), # file path where the downloaded file is to be saved.
+      mode = "wb") # Code written to download binary files must use mode = "wb" (or "ab")
+  }
+}
+
+tiff_dir <- "~/uomShare/wergStaff/ChrisW/mwstr_v13/"
+source("~/uomShare/wergStaff/ChrisW/mwstr_v13/mwstr_network_functions.R")
+
+str_db <- DBI::dbConnect(
+  RSQLite::SQLite(),
+  "gpkg/mwstr_v1.3.1.gpkg"
+)
+
+prepared_data <- prepare_af_site_data(
+  str_db,
+  tiff_dir
+)
+
+list2env(prepared_data, environment())
+
+# Site or reach
+sitecode_or_reach <- "LIS_453g"
+
+# Parameter combinations
+L_values <- c(5, 35)
+W_values <- c(100, 1000)
+
+# ------------------------------------------------------------
+# 2. Identify site and upstream subcatchments
+# ------------------------------------------------------------
+
+last_char <- substr(
+  sitecode_or_reach,
+  nchar(sitecode_or_reach),
+  nchar(sitecode_or_reach)
+)
+
+reachi <- ifelse(
+  last_char %in% 0:9,
+  sitecode_or_reach,
+  substr(
+    sitecode_or_reach,
+    1,
+    nchar(sitecode_or_reach) - 1
+  )
+)
+
+sitei <- subcs$site[subcs$reach == reachi]
+
+ppn_us <- ifelse(
+  last_char %in% 0:9,
+  0,
+  (match(last_char, letters[1:10]) - 1) * 0.1
+)
+
+m_dus <- ppn_us *
+  subcs$tot_length_m[subcs$site == sitei]
+
+d2oli <- subcs$d2ol_pp[subcs$site == sitei] +
+  m_dus
+
+# All upstream subcatchments
+allusi <- subcs$site[
+  igraph::subcomponent(
+    subcs_ig,
+    as.character(sitei),
+    "in"
+  )
+]
+
+allusi_d2ol <- subcs$d2ol_pp[
+  match(allusi, subcs$site)
+]
+
+# Use the largest W to define a common spatial extent
+max_us <- 10 * max(W_values)
+
+allusi_within_max_us <- allusi[
+  allusi_d2ol < d2oli + max_us
+]
+
+cati <- subcs[
+  subcs$site %in% allusi_within_max_us,
+]
+
+# ------------------------------------------------------------
+# 3. Prepare the common raster
+# ------------------------------------------------------------
+
+rasti <- terra::crop(
+  trees_4,
+  cati,
+  mask = TRUE
+)
+
+# Exclude locations downstream of the site
+terra::values(rasti$d2ol)[
+  terra::values(rasti$d2ol) < d2oli
+] <- NA
+
+# Exclude locations outside the upstream subcatchments
+mski <- rasti$site
+
+terra::values(mski)[
+  !terra::values(mski) %in% allusi_within_max_us
+] <- NA
+
+msk <- terra::ifel(
+  mski,
+  NA,
+  rasti$d2ol
+)
+
+rasti <- terra::mask(rasti, msk)
+rasti <- terra::trim(rasti)
+
+# Calculate distance upstream from the site
+rasti$d2ol <- rasti$d2ol -
+  rasti$d2str -
+  d2oli
+
+# ------------------------------------------------------------
+# 4. Calculate weighted forest cover
+# ------------------------------------------------------------
+
+parameter_grid <- tidyr::crossing(
+  W = W_values,
+  L = L_values
+) |>
+  mutate(
+    panel = case_when(
+      L == 5  & W == 100  ~ "(a)",
+      L == 35 & W == 100  ~ "(b)",
+      L == 5  & W == 1000 ~ "(c)",
+      L == 35 & W == 1000 ~ "(d)"
+    ),
+    panel = factor(
+      panel,
+      levels = c("(a)", "(b)", "(c)", "(d)")
+    ),
+    label = paste0(
+      panel,
+      "  L = ", L, " m, W = ", W, " m"
+    )
+  )
+
+plot_data <- purrr::pmap_dfr(
+  parameter_grid,
+  function(W, L, panel, label) {
+
+    # Attenuation weights
+    weight <- exp(
+      log(0.5) * rasti$d2str / L
+    ) * exp(
+      log(0.5) * rasti$d2ol / W
+    )
+
+    # Weighted forest cover for 2022
+    weighted_cover <- rasti[[7]] * weight
+
+    df <- terra::as.data.frame(
+      weighted_cover,
+      xy = TRUE,
+      na.rm = TRUE
+    )
+
+    names(df)[3] <- "weighted_cover"
+
+    df$panel <- panel
+    df$label <- label
+
+    df
+  }
+)
+
+# ------------------------------------------------------------
+# 5. Plot
+# ------------------------------------------------------------
+
+p <- ggplot(
+  plot_data,
+  aes(
+    x = x,
+    y = y,
+    fill = weighted_cover
+  )
+) +
+  geom_raster() +
+  facet_wrap(
+    ~ label,
+    ncol = 2
+  ) +
+  coord_equal(
+    expand = FALSE
+  ) +
+  scale_fill_viridis_c(
+    option = "C",
+    name = "Weighted\nforest cover"
+  ) +
+  labs(
+    title = paste(
+      "Attenuation-weighted forest cover:",
+      sitecode_or_reach
+    ),
+    subtitle = "2022 forest cover",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid = element_blank(),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 13
+    ),
+
+    strip.background = element_rect(
+      fill = "grey92",
+      colour = NA
+    ),
+
+    plot.title = element_text(
+      face = "bold",
+      size = 20
+    ),
+
+    plot.subtitle = element_text(
+      size = 14
+    ),
+
+    legend.title = element_text(
+      size = 12
+    ),
+
+    legend.text = element_text(
+      size = 11
+    ),
+
+    panel.spacing = grid::unit(
+      1,
+      "lines"
+    )
+  )
+
+p
+
+# ------------------------------------------------------------
+# 6. Export for PowerPoint
+# ------------------------------------------------------------
+
+ggsave(
+  filename = "AF_parameter_comparison.png",
+  plot = p,
+  width = 12,
+  height = 9,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
+
+
+```
+
+
+## Contours etc.
+
+### Data prep:
+
+```{r}
+#| label: load_data
+
+
+af_loo_table <- readRDS(file = "~/uomShare/wergStaff/tewilkins/git-data/env_optimisation/af_loo_full_and_pruned.rds")
+
+#af_loo_table <- data.frame(model = row.names(af_loo_table), af_loo_table, row.names = NULL)
+af_loo_table$diff_by_se <- af_loo_table$elpd_diff/af_loo_table$se_diff
+af_loo_table$W <- af_loo_table$L <- NA
+lws <- strsplit(substr(af_loo_table$model,5,nchar(af_loo_table$model)-2),"w")
+af_loo_table$L[1:(length(lws)-1)] <- as.numeric(lapply(lws[1:(length(lws)-1)],"[[",1))
+af_loo_table$W[1:(length(lws)-1)] <- as.numeric(lapply(lws[1:(length(lws)-1)],"[[",2))
+af_loo_table$map <- substr(af_loo_table$model, nchar(af_loo_table$model), nchar(af_loo_table$model))
+af_loo_table$map <- ifelse(af_loo_table$map == "f", "full", "pruned")
+af_loo_table$diff_by_se <- af_loo_table$elpd_diff/af_loo_table$se_diff
+af_loo_table$diff_by_se[1] <- 0
+af_loo_table$perc_bad_pareto_k <- NA
+# for(i in 1:nrow(af_loo_table)){
+#   looi <- loo_list[[i]]
+#   looi_ks <- looi$diagnostics$pareto_k
+#   af_loo_table$perc_bad_pareto_k[i] <- 100*sum(looi_ks > 0.7)/length(looi_ks)
+# }
+af_loo_table$looic_diff <- af_loo_table$looic - min(af_loo_table$looic)
+
+saveRDS(af_loo_table, file = "temp/af_loo_table.rds")
+
+```
+
+### AF figures:
+
+```{r}
+#| label: af_full_contour
+#| fig-width: 6
+#| fig-height: 6
+
+
+library(ggplot2)
+library(viridis)
+library(metR)
+
+af_loo_table <- readRDS(file = "temp/af_loo_table.rds")
+
+af_loo_full <- af_loo_table[af_loo_table$map == "full" & !is.na(af_loo_table$L),]
+
+# Remove L = 3.75 row:
+af_loo_full <- af_loo_full[af_loo_full$L != 3.75,]
+
+# Remove W = 625 and 633:
+af_loo_full <- af_loo_full[!(af_loo_full$W %in% c(625, 633)),]
+
+# Find the best point:
+best_af <- af_loo_full[which.min(af_loo_full$looic_diff),]
+
+p <- ggplot(
+  af_loo_full,
+  aes(x = L, y = W, z = looic_diff)
+) +
+  geom_contour(
+    aes(colour = after_stat(level)),
+    bins = 12,
+    linewidth = 0.9
+  ) +
+  scale_colour_viridis_c(
+    option = "C",
+    direction = -1,
+    name = expression(Delta * "LOOIC")
+  ) +
+  labs(
+    x = "Overland HDD (m)",
+    y = "In-stream HDD (km)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(
+      colour = "grey90",
+      linewidth = 0.35
+    ),
+    axis.title = element_text(
+      face = "bold",
+      colour = "grey20"
+    ),
+    axis.text = element_text(
+      colour = "grey25"
+    ),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right",
+    plot.background = element_rect(
+      fill = "white",
+      colour = NA
+    )
+  ) +
+  geom_point(
+    data = best_af,
+    aes(x = L, y = W),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 4,
+    stroke = 1.2,
+    fill = "white",
+    colour = "black"
+  ) + 
+  geom_text_contour(
+    aes(z = looic_diff),
+    bins = 12,
+    size = 3.5,
+    stroke = 0.2,
+    colour = "grey15"
+  )
+
+p 
+```
+
+You can add options to executable code like this
+
+```{r}
+#| label: af_pruned_contour
+#| fig-width: 6
+#| fig-height: 6
+
+library(ggplot2)
+library(viridis)
+library(metR)
+
+af_loo_table <- readRDS(file = "temp/af_loo_table.rds")
+
+af_loo_full <- af_loo_table[af_loo_table$map == "full" & !is.na(af_loo_table$L),]
+
+# Remove L = 3.75 row:
+af_loo_full <- af_loo_full[af_loo_full$L != 3.75,]
+
+# Remove W = 625 and 633:
+af_loo_full <- af_loo_full[!(af_loo_full$W %in% c(625, 633)),]
+
+# Find the best point:
+best_af <- af_loo_full[which.min(af_loo_full$looic_diff),]
+
+p <- ggplot(
+  af_loo_full,
+  aes(x = L, y = W, z = looic_diff)
+) +
+  geom_contour(
+    aes(colour = after_stat(level)),
+    bins = 12,
+    linewidth = 0.9
+  ) +
+  scale_colour_viridis_c(
+    option = "C",
+    direction = -1,
+    name = expression(Delta * "LOOIC")
+  ) +
+  labs(
+    x = "Overland HDD (m)",
+    y = "In-stream HDD (km)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(
+      colour = "grey90",
+      linewidth = 0.35
+    ),
+    axis.title = element_text(
+      face = "bold",
+      colour = "grey20"
+    ),
+    axis.text = element_text(
+      colour = "grey25"
+    ),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right",
+    plot.background = element_rect(
+      fill = "white",
+      colour = NA
+    )
+  ) +
+  geom_point(
+    data = best_af,
+    aes(x = L, y = W),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 4,
+    stroke = 1.2,
+    fill = "white",
+    colour = "black"
+  ) + 
+  geom_text_contour(
+    aes(z = looic_diff),
+    bins = 12,
+    size = 3.5,
+    stroke = 0.2,
+    colour = "grey15"
+  )
+
+p 
+
+```
+
+```{r}
+#| label: af_looic_w
+
+
+
+```
+
+```{r}
+#| label: af_looic_l
+
+
+
+```

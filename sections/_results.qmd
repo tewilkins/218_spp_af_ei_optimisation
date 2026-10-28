@@ -1,0 +1,29 @@
+## 4. Results
+
+### 4.1. Model predictor set
+
+We identified 16 model predictor sets that were equally plausible (δELPD \< 4 and δELPD/δSE \< 2; Table 2). All plausible models included the effects of catchment area ($C$), degree of upstream regulation ($D$) and temperature ($T$), supporting their inclusion in the final model. The quadratic effect of mean annual rainfall runoff ($Q$) improved predictive performance for 9 of the 16 models, and interactions between main effects ($I$, $F$ and $Q$) improved the fit of 15 models.
+
+The maximal model that included all interaction effects ($I \cdot F$, $I \cdot Q$ and $F \cdot Q$) was equally plausible to a simpler model with the same set of main effects but did not include interactions. This suggests inclusion of interactions may not improve model predictions, and selecting the model without interactions is preferable. $Q^2$ was included in the only plausible model without interactions, indicating support for modelling non-linear responses to $Q$ in the final predictor set. Based on these rationale, we selected the environmental covariate set $\gamma = H + I + F + Q + Q^2 + C + D + T$ for modelling macroinvertebrate occurrences and SIGNAL score.
+
+### 4.2. Does higher-resolution stream mapping influence the performance of models fitted with SIGNAL score and JSDM models fitted with taxon presence/absences?
+
+#### 4.2.1 SIGNAL score models
+
+In SIGNAL score models fitted with AF predictors, performance varied widely between trials of $L$ and $W$, with multiple contour peaks observed for both full and pruned networks [; A & B]. Of the 32 AF parameterisations trialled, 22 were plausible in the pruned network and 14 in the full network (δELPD \< 4 and δELPD/δSE \< 2). The posterior model performance aggregated across all trials (given by summed P-BMA+) was substantially higher in the pruned network (0.787) than in the full network (0.213), indicating better performance using the pruned stream network. In SIGNAL models using EI predictors, most trialed values for $L$, $sW$, and $W$ were plausible. Parameter sets with $W$ = 4800 m, $sW$ = 200 m, and $L$ = 16 m had the highest P-BMA+ [; A–C], although plausible parameterisations spanned the full range of trials: $L$ (1–128 m), $sW$ (16–∞ m), and $W$ (4.8–∞ km; Table 3).
+
+#### 4.2.2. Multi-taxon models
+
+Multi-taxon models showed similar performance between pruned and full networks, with plausibility converging toward a single contour peak around δELPD/δSE = 0 [; C & D]. Of the 32 AF parameterisations, 11 were plausible in the pruned network and 12 in the full network. P-BMA+ was 0.536 in the full network and 0.464 in the pruned network, suggesting little difference in model performance between pruned and full stream networks in multi-taxon models. Across both networks, plausible attenuation distances (HDDs) for AF in multi-taxon models ranged from 0–64 m for $L$ and 200–1600 m for $W$ (Table 3). In contrast to SIGNAL models, the highest P-BMA+ in multi-taxon models was observed with $W$ = ∞, $sW$ = 3200 m, and $L$ = 64 m, suggesting that weighting by $W$ provided no performance benefit, and that inference was more strongly influenced by $sW$ and $L$.
+
+### 4.3. Does inference of attenuation lengths differ between models using SIGNAL and multi-taxon models?
+
+We estimated attenuation lengths, given by their half-decay distances, for each model by computing P-BMA+ weighted averages across all trials of $L$, $W$, and $sW$ (Table 3). Overall, both SIGNAL and multi-taxon models identified similar optimal attenuation distances, but with differences in the breadth of plausible values.
+
+#### **AF predictors**
+
+For AF in the SIGNAL models, the estimated optimal $L$ was 15 m (full) and 7 m (pruned), with a wide plausible range of overland attenuation lengths ($0 < L < 64$ m). For multi-taxon models, optimal $L$ was 5 m for both networks, with a narrower plausible range ($0 < L < 32$ m), indicating inference with greater specificity. Optimal $W$ values were also similar: 587 m (full) and 632 m (pruned) for SIGNAL, compared with 404 m (pruned), 583 m (full), and 633 m (full and exhaustive range) for multi-taxon models. The δELPD/δSE contour surface for the exhaustive range of AF trials showed peak model performance concentrated at low $L$ and, to a lesser extent, low $W$ []. The contour region across the exhaustive range of model trials excluded the previously inferred values of $L$ = 35 m and $W$ = 1000 m from [@walsh&webb2014; ]. This strongly suggests that attenuation length estimates in this study differ from those inferred in earlier studies with a SIGNAL score endpoint.
+
+#### **EI predictors**
+
+For EI, optimal $L$ was consistent between model types (SIGNAL, 43 m; multi-taxon broad range, 70 m; multi-taxon exhaustive range, 44 m), with a shared plausible range (1–128 m; Table 3). However, the optimal $sW$ in multi-taxon models was much higher (2108 m in the full network, 1942 m with an exhaustive trial range) than in SIGNAL models (757 m), with both models supporting wide plausible ranges (multi-taxon, 200-∞ m; multi-taxon exhaustive, 400-∞ m; SIGNAL, 16-∞ m; Table 3). The $W$ parameter was not included in the exhaustive EI trials for multi-taxon models, as it did not improve fit. However, the SIGNAL model had highest support at $W$ = 4800 m. The δELPD/δSE contour surface across EI trials [] suggested model performance was associated with high values of $sW$ across most values of $L$. Our estimated overland attenuation length ($L = 44$ m) is outside the range of 0.2–18 m reported by @walsh2009, suggesting that longer overland attenuation distances for impervious cover improve model performance.

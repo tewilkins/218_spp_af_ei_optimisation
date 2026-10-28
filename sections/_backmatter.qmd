@@ -1,0 +1,47 @@
+
+## Acknowledgements
+
+We thank Gen Hehir for her time and effort in collecting samples, as well as Ary Hoffmann and Rhys Coleman for their contributions to the development of the project. We also thank Brendan Wintle and David Wilkinson for their kind advice on modelling species' co-occurrences and feedback.
+
+## Funding Statement
+
+This project was funded by the University of Melbourne and Melbourne Water, through the Melbourne Water Research Practice Partnership and the Australian Research Council Linkage Program (project number LP200100381).
+
+## Author Contributions
+
+<!--# Conceptualization – ideas, formulation of research goals -->
+
+<!--# Methodology – design of methodology, model development -->
+
+<!--# Software – programming, code (e.g., the Stan model) -->
+
+<!--# Validation – verification of results/reproducibility -->
+
+<!--# Formal analysis – statistical/mathematical analysis -->
+
+<!--# Investigation – conducting the research/data collection process -->
+
+<!--# Resources – materials, samples, instrumentation, funding for materials -->
+
+<!--# Data curation – data management, annotation, maintenance -->
+
+<!--# Writing – original draft -->
+
+<!--# Writing – review & editing -->
+
+<!--# Visualization – figures/data presentation -->
+
+<!--# Supervision – oversight/mentorship -->
+
+<!--# Project administration – coordination, scheduling -->
+
+<!--# Funding acquisition (MWRPP, project ) -->
+
+**Thomas E Wilkins:** Conceptualization, Methodology, Software, Formal analysis, Writing – original draft.\
+**Yung En Chee:** Supervision, Conceptualization, Investigation, Funding acquisition, Project administration, Writing – review & editing.\
+**Christopher J Walsh:** Supervision, Conceptualization, Validation, Funding acquisition, Project administration, Data curation, Resources, Writing – review & editing.\
+**Melissa E Carew:** Supervision, Investigation, Methodology, Validation, Resources, Writing – review & editing.
+
+## Conflict of Interest Statement
+
+The authors declare no conflict of interest.

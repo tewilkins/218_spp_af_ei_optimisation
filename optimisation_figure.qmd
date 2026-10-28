@@ -1,0 +1,612 @@
+---
+title: "Graphical visualisation of in-stream (dW and dsW) and overland (dW) attenuation distances used for calculation of effective imperviousness and attenuated forest cover, and pruned network equivalents (dLp and dWp)."
+author: "Thomas Wilkins"
+format: docx
+editor: visual
+---
+
+### 1.1. Little stringy bark creek example for figure
+
+```{r}
+#| label: little_stringy_bark_creek
+#| warning: false
+#| message: false
+#| echo: false
+#| include: false
+#| fig-cap: "Little Stringy Bark Creek (LIS_453) catchment and stream network."
+#| fig-width: 8
+#| fig-height: 6
+#| eval: false
+
+library(sf)
+
+plot_arrows_on_lines <- function(lines_sf, col = "black", lwd = 2, length = 0.1, angle = 90, upstream = TRUE, downstream = TRUE, cex = 0.5) {
+  # Ensure input is an sf object
+  if (!inherits(lines_sf, "sf")) stop("lines_sf must be an sf object.")
+  
+  # Loop through each feature
+  for (i in 1:nrow(lines_sf)) {
+    coords <- sf::st_coordinates(lines_sf[i, ])
+    if (nrow(coords) < 2) next  # skip if too short
+    n <- nrow(coords)
+    
+    # Arrow at downstream end
+    if (downstream == TRUE) {
+      arrows(
+        coords[n-1, "X"], coords[n-1, "Y"],
+        coords[n, "X"], coords[n, "Y"],
+        length = length, angle = angle, col = col, lwd = lwd
+      )
+    }
+    
+    # Arrow at upstream end
+    if (upstream == TRUE) {
+      points(
+        coords[1, "X"], coords[1, "Y"],
+        col = col, cex = cex, pch = 19
+      )
+    }
+  }
+}
+
+
+# Connect to MW databases:
+mwbugs <- RPostgres::dbConnect(RPostgres::Postgres(), "mwbugs", host = "localhost", port = 5432, user = "readonly", password = "reachcode_42")
+mwstr <- RPostgres::dbConnect(RPostgres::Postgres(), "mwstr", host = "localhost", port = 5432, user = "readonly", password = "reachcode_42")
+
+# load stream and subcatchment data:
+streams <- sf::st_read(mwstr, query = "SELECT * FROM streams;")
+subcs <- sf::st_read(mwstr, query = "SELECT * FROM subcs;")
+
+# # Fix reach LIS_74 (should be sampleable):
+streams$sampleable[streams$reach == "LIS_74"] <- 1 # Set LIS_74 to sampleable
+
+# Site to plot:
+# For little stringy bark creek: (LIS_453g)
+sitecode_or_reach <- "LIS_453g"
+
+# Get the site coordinates from sites table:
+sites <- sf::st_read(mwbugs, query = paste0("SELECT * FROM sites WHERE sitecode_v12 IN ('",
+                              paste(sitecode_or_reach), "');"))
+
+# take the site-level character identifier
+last_char <- substr(sitecode_or_reach,
+                    nchar(sitecode_or_reach),nchar(sitecode_or_reach))
+# reach code for site
+reachi <- ifelse(last_char %in% 0:9, sitecode_or_reach,
+                 substr(sitecode_or_reach,1,nchar(sitecode_or_reach)-1))
+
+sitei <- subcs$site[subcs$reach == reachi]
+
+# Calculate the proportion of the reach that is upstream of the site:
+ppn_us <- ifelse(last_char %in% 0:9,
+                 0, (match(last_char,letters[1:10]) - 1) * 0.1)
+
+# Distance upstream in meters:
+m_dus <- ppn_us * subcs$tot_length_m[subcs$site == sitei]
+
+# calculate distance to outlet for site i:
+d2oli <-  subcs$d2ol_pp[subcs$site == sitei] + m_dus
+
+# Each site in subcs has a unique site code, which is an integer.
+# Each site has the next downstream site integer as a separate column.
+# Get all subcatchments upstream of site i:
+subcs_ig <- igraph::graph_from_data_frame(subcs[,c("site","nextds")], directed = TRUE)
+
+# All upstream subcatchments:
+allusi <- subcs$site[igraph::subcomponent(subcs_ig, as.character(sitei), "in")]
+allusi_d2ol <- subcs$d2ol_pp[match(allusi,subcs$site)]
+full_LIS_catchment <- subcs[substr(subcs$reach, 1, 3) == "LIS" | subcs$site %in% allusi,] # The whole LIS catchment
+
+# Get stream lines for the LIS_453 catchment:
+LIS_stream <- streams[streams$site %in% allusi,] # Subset streams for LIS_453 catchment
+LIS_subcs <- subcs[subcs$site %in% allusi,] # Subset upstream subcatchments for LIS_453 catchment
+LIS_catchment <- sf::st_union(LIS_subcs$geom) # Creates a union of the subcatchments for plotting the whole catchment
+
+### Creating d2ol line for LIS_453
+# Subset LIS_453 stream lines outside of the catchment:
+LIS_2ol <- streams[substr(streams$reach, 1, 3) == "LIS",]
+LIS_2ol <- LIS_2ol[!LIS_2ol$reach %in% LIS_stream$reach,]
+
+# Merge into a single line:
+LIS_2ol_u <- LIS_2ol$geom %>%
+  sf::st_union() %>%       # dissolve into one geometry (MULTILINESTRING)
+  sf::st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_2ol_geos <- geos::as_geos_geometry(LIS_2ol_u) # Convert to GEOS geometry for buffering
+# Create a buffer around the d2ol line:
+LIS_2ol$buffer <- geos::geos_offset_curve(
+  LIS_2ol_geos, distance = -50, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+LIS_2ol$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_2ol$buffer)) # Convert to sf object
+st_crs(LIS_2ol$buffer) <- st_crs(LIS_2ol$geom) # Set the CRS to match the original stream lines
+
+### Stream pieces
+
+### Create the upstream sampleable length of the stream line
+# Subset LIS_stream to only include sampleable reaches in LSN:
+LIS_sampleable <- LIS_stream[substr(LIS_stream$reach, 1, 3) == "LSN" & LIS_stream$sampleable == 1,]
+# sitej <- LIS_sampleable$site[!LIS_sampleable$nextds %in% LIS_sampleable$site] # upstream-most point along the sampleable stream
+sitej <- LIS_sampleable$hydroid[!LIS_sampleable$hydroid %in% LIS_sampleable$nextdownid] # upstream-most point along the sampleable stream
+
+# Downstream sites from LIS_453:
+LIS_stream_ig <- igraph::graph_from_data_frame(LIS_stream[,c("hydroid","nextdownid")], directed = TRUE)
+
+# Get all downstream streams:
+alldsi <- LIS_stream$site[igraph::subcomponent(LIS_stream_ig, as.character(sitej), mode = "out")]
+
+# Join downstream sites to LIS_sampleable: #  & LIS_stream$site != 62485
+LIS_sampleable <- LIS_stream[LIS_stream$site %in% alldsi,] # Subset LIS_sampleable to only include downstream sites
+LIS_sampleable_u <- LIS_sampleable$geom %>%
+  st_union() %>%       # dissolve into one geometry (MULTILINESTRING)
+  st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_sampleable_geos <- geos::as_geos_geometry(LIS_sampleable_u) # Convert to GEOS geometry for buffering
+# Create a buffer around the d2ol line:
+LIS_sampleable$buffer <- geos::geos_offset_curve(
+  LIS_sampleable_geos, distance = 50, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+
+LIS_sampleable$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_sampleable$buffer)) # Convert to sf object
+st_crs(LIS_sampleable$buffer) <- st_crs(LIS_sampleable$geom) # Set the CRS to match the original stream lines
+
+### Create the upstream non-sampleable length of the stream line  & LIS_stream$sampleable == 0
+non_sampleable_hydroid <- LIS_stream$hydroid[LIS_stream$reach == "N7P_13"]
+# LIS_stream_ns <- LIS_stream[LIS_stream$sampleable == 0,] # Subset LIS_stream to only include non-sampleable reaches in LSN
+non_sampleable_allds <- LIS_stream$hydroid[igraph::subcomponent(LIS_stream_ig, as.character(non_sampleable_site), "out")]
+LIS_non_sampleable <- LIS_stream[LIS_stream$hydroid %in% non_sampleable_allds  & LIS_stream$sampleable == 0,]
+
+LIS_non_sampleable_u <- LIS_non_sampleable$geom %>%
+  st_union() %>%      # dissolve into one geometry (MULTILINESTRING)
+  st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_non_sampleable_geos <- geos::as_geos_geometry(LIS_non_sampleable_u) # Convert to GEOS geometry for buffering
+
+# Create a buffer around the d2ol line:
+LIS_non_sampleable$buffer <- geos::geos_offset_curve(
+  LIS_non_sampleable_geos, distance = 100, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+
+LIS_non_sampleable$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_non_sampleable$buffer)) # Convert to sf object
+
+st_crs(LIS_non_sampleable$buffer) <- st_crs(LIS_non_sampleable$geom) # Set the CRS to match the original stream lines
+
+
+### Setting colour scheme
+
+cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "grey40")
+
+dW_col <- cbbPalette[2] # dW colour
+dWs_col <- cbbPalette[7] # dWs colour
+dWp_col <- cbbPalette[2] # dWp colour
+dL_col <- cbbPalette[1] # dL colour
+dLp_col <- cbbPalette[1] # dLp colour
+d2ol_col <- cbbPalette[1] # d2ol colour
+sampleable_col <- cbbPalette[6] # Sampleable stream colour
+non_sampleable_col <- cbbPalette[6] # Non-sampleable stream colour
+downstream_col <- cbbPalette[3] # Downstream colour
+site_col <- cbbPalette[8] # Site colour
+bar_col <- cbbPalette[1] # Scale bar colour
+AF_cell_col <- cbbPalette[4] # AF cell colour
+EI_cell_col <- cbbPalette[5] # EI cell colour
+
+# Scale bar code:
+add_scalebar <- function(catchment, length, units = "m", cex = 0.8) {
+  # loc = c(x, y) bottom-left corner of scale bar
+  # length = length of scale bar in CRS units
+  # height = height of scale bar in CRS units (defaults to length/20)
+  
+  height <- length / 20
+#  if (!inherits(catchment, "sf")) stop("catchment must be an sf object.")
+  loc <- c(quantile(st_coordinates(st_geometry(catchment$geom))[,"X"], probs = 0.8),
+           quantile(st_coordinates(st_geometry(catchment$geom))[,"Y"], probs = 0))
+  
+  # Draw rectangle for scale bar
+  rect(loc[1], loc[2], loc[1] + length, loc[2] + height, col = bar_col)
+  
+  # Add text label
+  text(loc[1] + length/2, loc[2] - height*1.5, paste(length, units), cex = cex)
+}
+
+# Gridcell location (common across all three figures)
+gridcell_XY <- c(357600.5, 5817850.4) # Coordinates of the example gridcell
+
+# Site point
+site_cex <- 1.5 # Size of the site point
+
+# adjust label sizes:
+label_size <- 1 # Size of the labels on the map
+
+
+```
+
+```{r}
+#| label: little_stringy_bark_creek_EI
+#| warning: false
+#| message: false
+#| echo: false
+#| include: false
+#| fig-cap: "Little Stringy Bark Creek (LIS_453) catchment and stream network."
+#| fig-width: 8
+#| fig-height: 6
+#| eval: false
+
+##############
+### For EI ###
+##############
+
+# dW combines non-sampleable, sampleable, and d2ol reaches
+dW_sites <- unique(c(LIS_sampleable$site, 
+              LIS_non_sampleable$site, 
+              LIS_2ol$site))
+
+LIS_dW <- streams[streams$site %in% dW_sites, ] # Combine the dataframes into one
+
+LIS_dW <- LIS_dW$geom %>%
+  st_union() %>%       # dissolve into one geometry (MULTILINESTRING)
+  st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_dW_geos <- geos::as_geos_geometry(LIS_dW) # Convert to GEOS geometry for buffering
+
+# Create a buffer around the d2ol line:
+LIS_dW$buffer <- geos::geos_offset_curve(
+  LIS_dW_geos, distance = 50, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+
+LIS_dW$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_dW$buffer)) # Convert to sf object
+st_crs(LIS_dW$buffer) <- st_crs(LIS_dW$geom) # Set the CRS to match the original stream lines
+
+# dWs is the upstream non-sampleable length of the stream line (same as LIS_non_sampleable)
+LIS_dWs <- LIS_non_sampleable
+LIS_coords <- st_coordinates(LIS_sampleable)
+LIS_dWs$buffer <- st_cast(st_line_sample(LIS_dWs$buffer, 
+                                         sample = seq(0.1, 0.9, length.out = 100),
+                                         type = "regular"),
+                          "LINESTRING") # Ensure it's a LINESTRING
+LIS_dWs$buffer <- st_sf(geometry = LIS_dWs$buffer) # Convert to sf object
+
+# Trim the stream length of the most downstream dWs line for better plotting:
+# LIS_dWs$buffer <- st_line_sample(LIS_dWs$buffer, sample = seq(0.1, 0.9, length.out = 100)) # Ensure it's a LINESTRING
+# LIS_dWs$buffer <- st_segmentize(LIS_dWs$buffer, dfMaxLength = 100) # Segmentize the line to make it easier to plot
+
+### Plotting EI map ###
+
+# Plot subcatchments from LIS_subcs, with stream lines from LIS_stream:
+plot(st_geometry(full_LIS_catchment$geom), main = "Little Stringy Bark Creek (LIS_453)", border = "grey90")
+plot(st_geometry(LIS_subcs$geom), add = TRUE, border = "lightgrey", lwd = 1)
+plot(st_geometry(LIS_catchment), add = TRUE, border = "grey40", lty = 2)
+
+# Add streams:
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 1]), add = TRUE, col = sampleable_col, lwd = 2)
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = non_sampleable_col, lwd = 2, lty = 3)
+# plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = "darkblue", lwd = 2, lty = 3)
+plot(st_geometry(LIS_2ol$geom), add = TRUE, col = downstream_col, lwd = 2, lty = 1)
+
+# Add lines for labelling:
+plot(st_geometry(LIS_2ol$buffer), add = TRUE, col = d2ol_col, lwd = 2, lty = 2) # D2OL
+plot(st_geometry(LIS_dW$buffer), add = TRUE, col = dW_col, lwd = 2, lty = 1) # dW
+plot(st_geometry(LIS_dWs$buffer), add = TRUE, col = dWs_col, lwd = 2, lty = 1) # dWs
+plot_arrows_on_lines(LIS_2ol$buffer, col = d2ol_col) # D2OL arrows
+plot_arrows_on_lines(LIS_dW$buffer, col = dW_col) # D2OL arrows
+plot_arrows_on_lines(LIS_dWs$buffer, col = dWs_col) # D2OL arrows
+
+# Add point to represent site LIS_453:
+site_XY <- which(LIS_coords[,"X"] == max(LIS_coords[,"X"]))
+points(LIS_coords[site_XY,"X"], LIS_coords[site_XY,"Y"], 
+       bg = site_col, pch = 21, cex = site_cex) # Upstream-most point of sampleable stream
+
+# Add a square to represent a measured gridcell:
+points(gridcell_XY[1], gridcell_XY[2], col = dL_col,
+       bg = "grey", pch = 22, cex = 1.5) # Downstream-most point of sampleable stream
+
+# draw a line from point gridcell_XY to the upmost point of the non-sampleable stream:
+LIS_non_sampleable_coords <- st_coordinates(LIS_non_sampleable)
+ns_site_XY <- which(LIS_non_sampleable_coords[,"X"] == min(LIS_non_sampleable_coords[,"X"]))
+#lines(c(gridcell_XY[1], LIS_non_sampleable_coords[ns_site_XY,"X"]), 
+#      c(gridcell_XY[2], LIS_non_sampleable_coords[ns_site_XY,"Y"]), col = dL_col, lwd = 2)
+arrows(gridcell_XY[1], gridcell_XY[2], 
+       LIS_non_sampleable_coords[ns_site_XY,"X"], 
+       LIS_non_sampleable_coords[ns_site_XY,"Y"], 
+       length = 0.1, angle = 30, col = dL_col, lwd = 2)
+
+# Add text labels associated with each line:
+d2ol_middle <- st_coordinates(LIS_2ol$buffer)[nrow(st_coordinates(LIS_2ol$buffer)) / 2,]
+text(d2ol_middle["X"] + 260, d2ol_middle["Y"], 
+     labels = "d2ol", col = d2ol_col, cex = label_size)
+
+dW_middle <- st_coordinates(LIS_dW$buffer)[nrow(st_coordinates(LIS_dW$buffer)) / 2,]
+text(dW_middle["X"] - 200, dW_middle["Y"], 
+     labels = "dW", col = dW_col, cex = label_size)
+
+dWs_middle <- st_coordinates(LIS_dWs$buffer)[nrow(st_coordinates(LIS_dWs$buffer)) / 2,]
+text(dWs_middle["X"]-350, dWs_middle["Y"] + 350, 
+     labels = "dWs", col = dWs_col, cex = label_size)
+
+# create a label for dL that is half way between gridcell_XY and LIS_non_sampleable_coords
+dL_middle <- c((gridcell_XY[1] + LIS_non_sampleable_coords[ns_site_XY,"X"]) / 2, 
+                (gridcell_XY[2] + LIS_non_sampleable_coords[ns_site_XY,"Y"]) / 2)
+text(dL_middle[1] + 180, dL_middle[2],
+     labels = "dL", col = dL_col, cex = label_size)
+
+# Create a label just below the gridcell_XY point:
+text(gridcell_XY[1], gridcell_XY[2] - 180, 
+     labels = "Surface", col = dL_col, cex = label_size)
+
+# Add a legend:
+legend("topleft", legend = c("Subcatchment boundary of sampling site", "Sampleable stream", "Non-sampleable stream", "Downstream to outlet",  "d2ol", "dW", "dWs", "dL"),
+       col = c("grey40", sampleable_col, non_sampleable_col, downstream_col, d2ol_col, dW_col, dWs_col, dL_col), lty = c(2, 1, 3, 1, 2, 1, 1, 1), lwd = 2, bty = "n")
+
+# Add a scale bar in CRS units:
+add_scalebar(catchment = full_LIS_catchment, length = 1000, units = "m")
+
+```
+
+```{r}
+#| label: little_stringy_bark_creek_AF
+#| warning: false
+#| message: false
+#| echo: false
+#| include: false
+#| fig-cap: "Little Stringy Bark Creek (LIS_453) catchment and stream network, showing overland (dL) and in-stream (dW) measures for attenuated forest cover (AF)."
+#| fig-width: 8
+#| fig-height: 6
+#| eval: false
+
+##############
+### For AF ###
+##############
+
+# AF is much the same as EI, but without dWs as a separate line
+# dW combines non-sampleable, sampleable, and d2ol reaches
+dW_sites <- unique(c(LIS_sampleable$site, 
+              LIS_non_sampleable$site, 
+              LIS_2ol$site))
+
+LIS_dW <- streams[streams$site %in% dW_sites, ] # Combine the dataframes into one
+
+LIS_dW <- LIS_dW$geom %>%
+  st_union() %>%       # dissolve into one geometry (MULTILINESTRING)
+  st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_dW_geos <- geos::as_geos_geometry(LIS_dW) # Convert to GEOS geometry for buffering
+
+# Create a buffer around the d2ol line:
+LIS_dW$buffer <- geos::geos_offset_curve(
+  LIS_dW_geos, distance = 50, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+
+LIS_dW$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_dW$buffer)) # Convert to sf object
+st_crs(LIS_dW$buffer) <- st_crs(LIS_dW$geom) # Set the CRS to match the original stream lines
+
+### Plotting AF map ###
+
+# Plot subcatchments from LIS_subcs, with stream lines from LIS_stream:
+plot(st_geometry(full_LIS_catchment$geom), main = "Little Stringy Bark Creek (LIS_453)", border = "grey90")
+plot(st_geometry(LIS_subcs$geom), add = TRUE, border = "lightgrey", lwd = 1)
+plot(st_geometry(LIS_catchment), add = TRUE, border = "grey40", lty = 2)
+
+# Add streams:
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 1]), add = TRUE, col = sampleable_col, lwd = 2)
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = non_sampleable_col, lwd = 2, lty = 1)
+# plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = "darkblue", lwd = 2, lty = 3)
+plot(st_geometry(LIS_2ol$geom), add = TRUE, col = downstream_col, lwd = 2, lty = 1)
+
+# Add lines for labelling:
+plot(st_geometry(LIS_2ol$buffer), add = TRUE, col = d2ol_col, lwd = 2, lty = 2) # D2OL
+plot(st_geometry(LIS_dW$buffer), add = TRUE, col = dW_col, lwd = 2, lty = 1) # dW
+plot_arrows_on_lines(LIS_2ol$buffer, col = d2ol_col) # D2OL arrows
+plot_arrows_on_lines(LIS_dW$buffer, col = dW_col) # D2OL arrows
+
+# Add point to represent site LIS_453:
+site_XY <- which(LIS_coords[,"X"] == max(LIS_coords[,"X"]))
+points(LIS_coords[site_XY,"X"], LIS_coords[site_XY,"Y"], 
+       bg = site_col, pch = 21, cex = site_cex) # Upstream-most point of sampleable stream
+
+# Add a square to represent a measured gridcell:
+points(gridcell_XY[1], gridcell_XY[2], col = dL_col,
+       bg = AF_cell_col, pch = 22, cex = 1.5) # Downstream-most point of sampleable stream
+
+# draw a line from point gridcell_XY to the upmost point of the non-sampleable stream:
+LIS_non_sampleable_coords <- st_coordinates(LIS_non_sampleable)
+ns_site_XY <- which(LIS_non_sampleable_coords[,"X"] == min(LIS_non_sampleable_coords[,"X"]))
+lines(c(gridcell_XY[1], LIS_non_sampleable_coords[ns_site_XY,"X"]), 
+      c(gridcell_XY[2], LIS_non_sampleable_coords[ns_site_XY,"Y"]), col = dL_col, lwd = 2)
+arrows(gridcell_XY[1], gridcell_XY[2], 
+       LIS_non_sampleable_coords[ns_site_XY,"X"], 
+       LIS_non_sampleable_coords[ns_site_XY,"Y"], 
+       length = 0.1, angle = 30, col = dL_col, lwd = 2)
+
+# Add text labels associated with each line:
+d2ol_middle <- st_coordinates(LIS_2ol$buffer)[nrow(st_coordinates(LIS_2ol$buffer)) / 2,]
+text(d2ol_middle["X"] + 260, d2ol_middle["Y"], 
+     labels = "d2ol", col = d2ol_col, cex = label_size)
+
+dW_middle <- st_coordinates(LIS_dW$buffer)[nrow(st_coordinates(LIS_dW$buffer)) / 2,]
+text(dW_middle["X"] - 200, dW_middle["Y"], 
+     labels = "dW", col = dW_col, cex = label_size)
+
+# create a label for dL that is half way between gridcell_XY and LIS_non_sampleable_coords
+dL_middle <- c((gridcell_XY[1] + LIS_non_sampleable_coords[ns_site_XY,"X"]) / 2, 
+                (gridcell_XY[2] + LIS_non_sampleable_coords[ns_site_XY,"Y"]) / 2)
+text(dL_middle[1] + 180, dL_middle[2],
+     labels = "dL", col = dL_col, cex = label_size)
+
+# Create a label just below the gridcell_XY point:
+text(gridcell_XY[1], gridcell_XY[2] - 180, 
+     labels = "Surface", col = dL_col, cex = label_size)
+
+# Add a legend:
+legend("topleft", legend = c("Subcatchment boundary of sampling site", "Sampleable stream", "Non-sampleable stream", "Downstream to outlet", "d2ol", "dW", "dL"),
+       col = c("grey40", sampleable_col, non_sampleable_col, downstream_col, d2ol_col, dW_col, dL_col), lty = c(2, 1, 3, 1, 2, 1, 1), lwd = 2, bty = "n")
+
+# Add a scale bar in CRS units:
+add_scalebar(catchment = full_LIS_catchment, length = 1000, units = "m")
+
+
+
+```
+
+```{r}
+#| label: little_stringy_bark_creek_AF_pruned
+#| warning: false
+#| message: false
+#| echo: false
+#| include: false
+#| fig-cap: "Little Stringy Bark Creek (LIS_453) catchment and stream network, showing pruned network overland (dL) and in-stream (dW) measures for attenuated forest cover (AF)."
+#| fig-width: 8
+#| fig-height: 6
+#| eval: false
+
+# Pruned dWp and dL removes the non-sampleable reaches from the dW and dL lines
+# dWp combines sampleable and d2ol reaches
+dWp_sites <- unique(c(LIS_sampleable$site,
+              LIS_2ol$site))
+
+LIS_dWp <- streams[streams$site %in% dWp_sites, ] # Combine the dataframes into one
+
+LIS_dWp <- LIS_dWp$geom %>%
+  st_union() %>%       # dissolve into one geometry (MULTILINESTRING)
+  st_line_merge()      # merge connected segments into LINESTRING
+
+LIS_dWp_geos <- geos::as_geos_geometry(LIS_dWp) # Convert to GEOS geometry for buffering
+
+# Create a buffer around the d2ol line:
+LIS_dWp$buffer <- geos::geos_offset_curve(
+  LIS_dWp_geos, distance = 50, params = geos::geos_buffer_params(
+    join_style = "round", quad_seg = 8
+  )
+)
+
+LIS_dWp$buffer <- st_sf(geometry = sf::st_as_sfc(LIS_dWp$buffer)) # Convert to sf object
+st_crs(LIS_dWp$buffer) <- st_crs(LIS_dWp$geom) # Set the CRS to match the original stream lines
+
+
+### Plotting AF map ###
+
+# Plot subcatchments from LIS_subcs, with stream lines from LIS_stream:
+plot(st_geometry(full_LIS_catchment$geom), main = "Little Stringy Bark Creek (LIS_453)", border = "grey90")
+plot(st_geometry(LIS_subcs$geom), add = TRUE, border = "lightgrey", lwd = 1)
+plot(st_geometry(LIS_catchment), add = TRUE, border = "grey40", lty = 2)
+
+# Add streams:
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 1]), add = TRUE, col = sampleable_col, lwd = 2)
+plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = non_sampleable_col, lwd = 2, lty = 3)
+# plot(st_geometry(LIS_stream$geom[LIS_stream$sampleable == 0]), add = TRUE, col = cbbPalette[3], lwd = 2, lty = 3)
+plot(st_geometry(LIS_2ol$geom), add = TRUE, col = downstream_col, lwd = 2, lty = 1)
+
+# Add lines for labelling:
+plot(st_geometry(LIS_2ol$buffer), add = TRUE, col = d2ol_col, lwd = 2, lty = 2) # D2OL
+plot(st_geometry(LIS_dWp$buffer), add = TRUE, col = dWp_col, lwd = 2, lty = 1) # dWp
+plot_arrows_on_lines(LIS_2ol$buffer, col = d2ol_col) # D2OL arrows
+plot_arrows_on_lines(LIS_dWp$buffer, col = dW_col) # D2OL arrows
+
+# Add point to represent site LIS_453:
+site_XY <- which(LIS_coords[,"X"] == max(LIS_coords[,"X"]))
+points(LIS_coords[site_XY,"X"], LIS_coords[site_XY,"Y"], 
+       bg = site_col, pch = 21, cex = site_cex) # Upstream-most point of sampleable stream
+
+# Add a square to represent a measured gridcell:
+points(gridcell_XY[1], gridcell_XY[2], col = dLp_col,
+       bg = AF_cell_col, pch = 22, cex = 1.5) # Downstream-most point of sampleable stream
+
+# draw a line from point gridcell_XY to the upmost point of the non-sampleable stream:
+LIS_sampleable_coords <- st_coordinates(LIS_sampleable)
+ns_site_XY <- which(LIS_sampleable_coords[,"X"] == min(LIS_sampleable_coords[,"X"]))
+# lines(c(gridcell_XY[1], LIS_sampleable_coords[ns_site_XY,"X"]), 
+#       c(gridcell_XY[2], LIS_sampleable_coords[ns_site_XY,"Y"]), col = dLp_col, lwd = 2)
+arrows(gridcell_XY[1], gridcell_XY[2], 
+       LIS_sampleable_coords[ns_site_XY,"X"], 
+       LIS_sampleable_coords[ns_site_XY,"Y"], 
+       length = 0.1, angle = 30, col = dL_col, lwd = 2)
+
+# Add text labels associated with each line:
+d2ol_middle <- st_coordinates(LIS_2ol$buffer)[nrow(st_coordinates(LIS_2ol$buffer)) / 2,]
+text(d2ol_middle["X"] + 260, d2ol_middle["Y"], 
+     labels = "d2ol", col = d2ol_col, cex = label_size)
+
+dWp_middle <- st_coordinates(LIS_dWp$buffer)[nrow(st_coordinates(LIS_dWp$buffer)) / 2,]
+text(dWp_middle["X"] - 250, dWp_middle["Y"], 
+     labels = "dWp", col = dWp_col, cex = label_size)
+
+# create a label for dL that is half way between gridcell_XY and LIS_non_sampleable_coords
+dL_middle <- c((gridcell_XY[1] + LIS_non_sampleable_coords[ns_site_XY,"X"]) / 2, 
+                (gridcell_XY[2] + LIS_non_sampleable_coords[ns_site_XY,"Y"]) / 2)
+text(dL_middle[1] + 120, dL_middle[2]+90,
+     labels = "dLp", col = dLp_col, cex = label_size)
+
+# Create a label just below the gridcell_XY point:
+text(gridcell_XY[1], gridcell_XY[2] - 180, 
+     labels = "Surface", col = dLp_col, cex = label_size)
+
+# Add a legend:
+legend("topleft", legend = c("Subcatchment boundary of sampling site", "Sampleable stream", "Non-sampleable stream", "Downstream to outlet",  "d2ol", "dWp", "dLp"),
+       col = c("grey40", sampleable_col, non_sampleable_col, downstream_col, d2ol_col, dWp_col, dLp_col), lty = c(2, 1, 3, 1, 2, 1, 1), lwd = 2, bty = "n")
+
+# Add a scale bar in CRS units:
+add_scalebar(catchment = full_LIS_catchment, length = 1000, units = "m")
+
+
+```
+
+```{r}
+#| label: table
+#| warning: false
+#| message: false
+#| echo: false
+#| eval: false
+
+library(gridExtra)
+
+table_data <- data.frame(
+  Parameter = c("dW", "dWs", "dL", "dWp", "dLp", "d2ol"),
+  Description = c("Instream attenuation length using the full stream network",
+                  "Instream attenuation length using non-sampleable small streams only",
+                  "Overland attenuation length using the full stream network",
+                  "Instream attenuation length using the pruned stream network",
+                  "Overland attenuation length using the pruned stream network",
+                  "Distance to outlet length from sampling site")
+)
+
+# Create the table grob
+tbl <- tableGrob(table_data, rows = NULL)
+
+# Push into current plotting panel
+plot(1:10, 1:10, type = "n", xlab = "", ylab = "", axes = FALSE) # example panel
+grid::grid.draw(tbl)  # overlays the table in the plot region
+
+
+
+```
+
+### Putting them all together
+
+```{r}
+#| label: little_stringy_bark_creek_final 
+#| warning: false 
+#| message: false 
+#| echo: false 
+#| fig-cap: "Flowpath distances used in the calculation of Effective Imperviousness (EI, in panel A), and Attenuated Forest cover (AF) using the full stream network (in panel B), and the pruned network (panel C), for . For EI, dW is the instream attenuation length using the full stream network, dWs is the instream attenuation length using non-sampleable small streams only, dL is the overland attenuation length using the full stream network, and d2ol is the distance to outlet length from the sampling site. For AF using the full stream network, dW is the instream attenuation length using the full stream network, and dL is the overland attenuation length using the full stream network. For AF using the pruned stream network, dWp is the instream attenuation length using the pruned stream network, and dLp is the overland attenuation length using the pruned stream network. Panel D provides a legend for panels A-C and a table describing each of the flowpath distances." 
+#| fig-width: 8 
+#| fig-height: 6
+
+source("functions/setup.R")
+source("af_ei_figure/compile_str_catchment.R")
+
+layout(matrix(c(1,2,3,4,4,4), nrow = 2, byrow = TRUE), heights = c(1.2, 0.6))
+par(mar = c(0, 0, 0, 0)) # Margins for the three maps
+source("af_ei_figure/little_stringy_bark_creek_EI.R")
+source("af_ei_figure/little_stringy_bark_creek_AF_full.R")
+source("af_ei_figure/little_stringy_bark_creek_AF_pruned.R")
+source("af_ei_figure/table.R")
+
+```

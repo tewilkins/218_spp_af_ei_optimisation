@@ -1,0 +1,366 @@
+---
+title: "AF optimization with 196 spp model"
+format: docx
+editor: source
+execute:
+  warning: false
+  message: false
+bibliography: references.bib
+editor_options: 
+  chunk_output_type: inline
+---
+
+Tom, This document produces the contour plots for variants of AF, AF using the pruned network and EI. I've added some interpretation of what I think are the most important implications, for your consideration and use in your manuscript as you see fit.
+
+I have elected not to push anything to your repository, instead sending you all files I have used as an email attachment, for you to curate as you see fit. Here is a narrative explanation of how the files fit together to produce the results.
+
+All scripts begin by loading the data and a function for running the stan model using the script "quick_218_spp_data_assembly_for_ou_model.R". This script includes the species subsetting step, which I hope is sufficient to explain my logic.
+
+Selection of the optimal combination of predictor variables is recorded in "MW_metabarcoding_218spp_model_selection.qmd". The text in that document needs some tidying up - Perhaps the detail of this step belongs more naturally in your optimization paper than my false postive report (perhaps as a sentence or three in the methods, with the detail as supplementary material). The text of this document includes details on the bash scripts I used to do the model selection, so I won't provide any detail about that here, other to note that those bash scripts were a little different from the scripts I used subsequently as described below (and to include "batch_218spp_mod_select.R", which it calls, and names incorrectly in the text!).
+
+1.  AF. The AF variants loaded in "batch_218_spp_opt_af.R" were generated in "github.com/cjbwalsh/mwstr/af_variant_compilation_for_optimization.qmd" (I'm currently running one last set for L= 0, but it is taking forever....). You don't need to use that compilation file -I'm just recording where the rds files that the script reads come from - Run down to L61 of "batch_218_spp_opt_af.R" to get a data.frame (af_var_df) of the variants you can use for the SIGNAL analysis. I ran this batch script in parallel R sessions using bash files like "run_primary_af_batch.sh". I was able to run two parallel sessions per 64Gb-RAM server.
+
+2.  AF_big. The AF_big variants loaded in "batch_218_spp_opt_af_big.R" were also generated in "github.com/cjbwalsh/mwstr/af_variant_compilation_for_optimization.qmd". This script takes a different approach to data.frame-izing the input AF variant data. And the batch script run as for AF with bash files like "run_primary_af_big_batch_3.sh"
+
+3.  EI. The EI variants loaded in "batch_218_spp_opt_ei.R" were generated in "github.com/cjbwalsh/mwstr/ei_vars_sep2026.R" - as above no need to use that file - just load "sites_ei_sW_W_vars.rds" (L5 of "batch_218_spp_opt_ei.R") that the compilation script generated. The batch script was run with bash files like "run_primary_ei_3.sh".
+
+I hope that that covers all of the the files that you need, and that I have correctly attached them all.
+
+I'm also attaching my draft (very drafty) false positive assessment document ("MW_metabarcoding_false_pos_assess.qmd") for your reference. This includes some methodological text about the model structure that I have compiled with a fair bit of help from my AI friend. Perhaps of some help to you (if you use it carefully!)
+
+```{r}
+source("quick_218_spp_data_assembly_for_ou_model.R")
+
+```
+
+### Optimal AF parameterization
+
+The search for the optimal parameterization was conducted iteratively using 272 samples from 223 sites, with a subset of 218 species from the full set of 878 species. The subset was selected to include all high-prevalence species and a spread of less prevalent species (@fig-prev_hist).
+
+```{r}
+#| label: fig-prev_hist
+#| fig-height: 5
+#| fig-width: 5
+#| fig-cap: "Distribution of prevalence among the 878 species detected in the broader study (grey) and the 218 species chosen for preliminary analyses."
+#| 
+hist(biot_prev$prevalence, breaks = seq(0,0.85,0.025), 
+     main = "", xlab = "Prevalence", las = 1)
+hist(species_set$prevalence, breaks = seq(0,0.85,0.025), col = "blue", add = TRUE)
+legend("topright", pch = 22, pt.bg = c("grey","blue"), pt.cex = 2,
+       legend = c("Full species set","Subset of 218 species"))
+box(bty = "l")
+
+```
+
+We searched for the optimal parameterization of AF and EI using LOO-CV (Leave-One-Out Cross-Validation with Pareto smoothed importance sampling: @vehtari_etal_2017) calculated as Expected Log Pointwise Predictive Density (ELPD). ELPD is equivalent to -2 X LOO-IC, the LOO-based information criterion analogous to the Aikake Information Criterion. Because our search for the optimal parameterization of predictors is across many non-independent models, the use of the standard error to compare plausibility [@mclatchie_vehtari_2024] is not valid. Furthermore, ELPD of all models tested had 1.6-1.9% 'bad' Pareto-k values (\>0.7), indicating likely unstable estimates of standard errors in expected log predictive density. However, the aggregate signal of the remaining \~98% of data points provides a reliable estimate of the peak ELPD. We thus identify the optimal parameterization and use our grid-search of paramters as a profile likelihood curve, conservatively using the information-theoretic approach of considering parameters falling within 0-10 absolute ELPD units (i.e. 0-5 LOO-IC units) of the optimum as equally plausible.
+
+(After writing the above, I chose to illustrate differences in plausibility with LOO-IC rather than ELPD, given that we are not using the ELPD logic for differences in plausibility, I figure it's best to stick with LOO-IC, which is more comparable to the AIC used in previous similar studies.)
+
+```{r}
+#| echo: false
+
+# af_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial2_218spp_af_opt"
+# loo_list <- list()  # original 'optimum' was l5_l633
+# af_mods <- dir(af_dir)[dir(af_dir) != "logs"]
+# for(i in 1:length(af_mods)) {
+#   if(length(grep("rds", dir(paste0(af_dir, "/",af_mods[i])))) == 1) {
+#   loo_list <- c(loo_list, list(
+#     readRDS(paste0(af_dir,"/", af_mods[i],"/", af_mods[i], "model_bundle.rds"))$loo))
+#   names(loo_list)[length(loo_list)] <- af_mods[i]
+#   }
+# }
+# save(loo_list, file = "~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_af.rda")
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_af.rda")
+
+n_way_comparison <- loo::loo_compare(loo_list)
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+n_way_comparison$diff_by_se <- n_way_comparison$elpd_diff/n_way_comparison$se_diff
+n_way_comparison$W <- n_way_comparison$L <- NA
+lws <- strsplit(substr(n_way_comparison$model,5,nchar(n_way_comparison$model)),"w")
+n_way_comparison$L[1:(length(lws)-1)] <- as.numeric(lapply(lws[1:(length(lws)-1)],"[[",1))
+n_way_comparison$W[1:(length(lws)-1)] <- as.numeric(lapply(lws[1:(length(lws)-1)],"[[",2))
+n_way_comparison$diff_by_se <- n_way_comparison$elpd_diff/n_way_comparison$se_diff
+n_way_comparison$diff_by_se[1] <- 0
+n_way_comparison$perc_bad_pareto_k <- NA
+for(i in 1:nrow(n_way_comparison)){
+  looi <- loo_list[[i]]
+  looi_ks <- looi$diagnostics$pareto_k
+  n_way_comparison$perc_bad_pareto_k[i] <- 100*sum(looi_ks > 0.7)/length(looi_ks)
+}
+n_way_comparison$looic_diff <- n_way_comparison$looic - n_way_comparison$looic[1]
+
+write.csv(n_way_comparison, file = "temp/af_multi_taxon_loo_comparison.csv")
+
+```
+
+```{r}
+#| label: fig-af_elpds
+#| fig-width: 7
+#| fig-height: 9
+#| fig-cap: "A. Contour plot of model plausibility with different variants of AF based on $\delta$LOO-IC. The red crosses shows two variants with $\delta$LOO-IC < 5 (the optimal, zero value was L 1, W 1600 m), and the profiles of $\delta$ELPD along B. L, given the optimal W and C. W, given the optimal L.  The horizontal lines in B and C identify $\delta$LOO-IC = 2 and 4."
+
+n_way_comparison <- read.csv("temp/af_multi_taxon_loo_comparison.csv", row.names = 1)
+
+Ls <- c(1,2,4,6,8,10)
+Ws <- c(c(400,600,800,1000,1200,1400,1600,1800,2000,2200))  
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(Ws))
+for(i in 1:length(Ls)){
+  for(j in 1:length(Ws)){
+    if(length(which(n_way_comparison$L == Ls[i] & n_way_comparison$W == Ws[j])) > 0)
+    elpd_mat[i,j] <- n_way_comparison$looic_diff[which(n_way_comparison$L == Ls[i] & n_way_comparison$W == Ws[j])]
+  }
+}
+
+par(mar = c(4,4,1,1))
+layout(matrix(c(1,1,2,3), 2,2, byrow = TRUE), widths = c(12,12), heights = c(12,8))
+contour(Ws, log(Ls), t(elpd_mat), ylab = "L (m)", xlab = "W (km)", axes = FALSE, levels = c(5,10,20,40,80,120))
+abline(h = log(1), v = 1600, lty = 3)
+points(c(1600),log(c(1)), pch = 3, col = "red")
+axis(2, at = log(c(1,2,4,8)), labels = c(1,2,4,8)); box(); # title("B.", adj = 0)
+axis(1, at = seq(200,2200,200), labels = seq(200,2200,200)/1000, las= 1)
+title(main = "A.", adj = 0)
+
+plot(log(Ls),elpd_mat[,which(Ws == 1600)], type ="l",
+     xlab = "L (m)", ylab = expression(Delta * "LOO-IC"), axes = FALSE)
+axis(1, at = log(c(1,2,4,8)), labels = c(1,2,4,8)); axis(2, las = 1); box(bty = "l")
+abline(h = c(8), lty = 3)
+title(main = "B.", adj = 0)
+
+plot(Ws,elpd_mat[which(Ls == 1),], type ="l",
+     xlab = "W (km)", ylab = expression(Delta * "LOO-IC"), axes = FALSE)
+axis(1, at = seq(200,2200,200), labels = seq(200,2200,200)/1000, las= 1)
+axis(2); box(bty = "l")
+abline(h = c(8), lty = 3)
+title(main = "C.", adj = 0)
+
+```
+
+The model using the optimal AF variant was 673 LOO-IC units <!-- round(n_way_comparison$looic_diff[n_way_comparison$model.1 == "tf"]) --> than one using TF as the forest cover predictor. This is strong evidence that the spatial arrangement of forest cover in the catchment is an important determinant of macroinvertebrate assemblages in streams, with forest cover closer to the reach having a greater influence than more distant forest.
+
+The optimal parameterization tested for AF was L = 1 and W = 1600 m (@fig-af_elpds), with a plausible range of L \~0-1.5 m, and of W 1500-1800 m. Estimation of the optimal L value is limited by the precision of our 5-m gridcell forest raster. The stream network map is highly accurate, but the land-use rasters used in these analyses mark each stream line as a 1-gridcell line of NAs: an overestimate of stream width for small streams, and an underestimate for a relatively small length of larger streams in the region.
+
+(At the time of writing I am calculating AF variants with L = 0, but it is taking a LONG time....)
+
+A value of L= 0 thus weights 5-m gridcells that touch the stream line as 1, and all other gridcells as 0. It thus approximates forest cover in a 7.5-m-width buffer along stream mid-lines. A value of L = 1.5 applies the same weighting of 1 to the streamside gridcells, a weighting of 0.1 to the next nearest gridcells (7.5-12.5 m from the stream midline), and 0.01 to those 12.5-17.5 m from the midline. Thus a value of L = 1.5 implies that 100% effective forest cover can be achieved with a buffer of \~15-20 m from the stream line.
+
+A value of W = 1500-1800 m implies that 95% effective forest cover requires a continuous forested buffer for 6.5-8 km upstream.
+
+```{r}
+#| echo: false
+
+# loo_list <- list()
+# af_big_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial2_218spp_af_big_opt"
+# af_big_mods <- dir(af_big_dir)[dir(af_big_dir) != "logs"]
+# for(i in 1:length(af_big_mods)) {
+#   if(length(grep("rds", dir(paste0(af_big_dir, "/", af_big_mods[i])))) == 1)
+#   loo_list <- c(loo_list, list(
+#      readRDS(paste0(af_big_dir,"/", af_big_mods[i],"/", af_big_mods[i], "model_bundle.rds"))$loo))
+#   names(loo_list)[length(loo_list)] <- af_big_mods[i]
+# }
+# save(loo_list, file = "~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_big_af.rda")
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_big_af.rda")
+n_way_comparison <- loo::loo_compare(loo_list)
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+
+Ls <- c(1,2,4,8,16,32,64)
+Ws <- c(c(200,400,800,1600))  
+lw_mat <- do.call(rbind,strsplit(gsub("af_l","",n_way_comparison$model),"w"))
+n_way_comparison$L <- as.numeric(lw_mat[,1])
+n_way_comparison$W <- as.numeric(lw_mat[,2])
+n_way_comparison$looic_diff <- n_way_comparison$looic - n_way_comparison$looic[1]
+# make zero case the optimal af_var from above
+
+n_way_comparison_af <- read.csv("temp/af_multi_taxon_loo_comparison.csv", row.names = 1)
+
+n_way_comparison$looic_diff <- n_way_comparison$looic_diff +
+  (n_way_comparison$looic[1] - n_way_comparison_af$looic[1])
+
+write.csv(n_way_comparison, file = "temp/af_big_multi_taxon_loo_comparison.csv")
+
+
+```
+
+
+```{r}
+#| echo: false
+
+# Joint loo-comparison of AF and AF_big variants
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_big_af.rda")
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_af.rda")
+
+
+
+
+```
+
+Models with AF calculated using the pruned network, which approximates the (less accurate, less dense) network used by @walsh_webb_2014, were substantially less plausible than models using the full network (the best model using the pruned network had LOO-IC 86 greater than the best model using the full network" @fig-big_af_elpds). Thus, even though the forest buffers indicated by this study are narrower than those inferred by @walsh_webb_2014, it is important that the buffers extend along small ephemeral gullies that were unmapped by W & W.
+
+(I think it would be good to produce a figure showing the difference between bufffers that a) ignore small streams abd b) extend along small streams)
+
+@fig-big_af_elpds suggests an optimal af_big variant of L \<2m and W \<200 m - quite different from Walsh and Webb ( a difference that might be more easily explained if SIGNAL tells a different story?).
+
+```{r}
+#| label: fig-big_af_elpds
+#| fig-width: 5
+#| fig-height: 5
+#| fig-cap: "Comparison of model plausibility with different variants of AF calculated using a pruned network. The contours represent the difference in LOO-IC for the model using each variant and that of the optimal model determined for AF using the full network above. All variants using the pruned network are substantially less plausible than the optimal variant using the full network."
+
+n_way_comparison <- read.csv("temp/af_big_multi_taxon_loo_comparison.csv", row.names = 1)
+
+# Fix looic diff:
+n_way_comparison$looic_diff <- n_way_comparison$elpd_diff * -2
+
+Ls <- c(1,2,4,8,16,32,64)
+Ws <- c(c(200,400,800,1600))  
+
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(Ws))
+for(i in 1:length(Ls)){
+  for(j in 1:length(Ws)){
+    if(sum(n_way_comparison$L == Ls[i] & n_way_comparison$W == Ws[j]) > 0)
+    elpd_mat[i,j] <- n_way_comparison$looic_diff[n_way_comparison$L == Ls[i] & n_way_comparison$W == Ws[j]]
+  }
+}
+
+par(mar = c(4,4,1,1))
+layout(matrix(c(1,1,2,3), 2,2, byrow = TRUE), widths = c(12,12), heights = c(12,8))
+contour(Ls, Ws, elpd_mat, xlab = "L (m)", ylab = "W (km)", axes = FALSE)
+axis(1); box(); title("B.", adj = 0)
+axis(2, at = seq(200,1600,200), labels = seq(200,1600,200)/1000, las= 1)
+
+plot(log(Ls),elpd_mat[,which(Ws == 200)], type ="l",
+     xlab = "L (m)", ylab = expression(Delta * "LOO-IC"), axes = FALSE)
+axis(1, at = log(c(1,2,4,8,16,32,64)), labels = c(1,2,4,8,16,32,64)); axis(2, las = 1); box(bty = "l")
+abline(h = c(8), lty = 3)
+title(main = "B.", adj = 0)
+
+plot(Ws,elpd_mat[which(Ls == 1),], type ="l",
+     xlab = "W (km)", ylab = expression(Delta * "LOO-IC"), axes = FALSE)
+axis(1, at = seq(200,1600,200), labels = seq(200,1600,200)/1000, las= 1)
+axis(2); box(bty = "l")
+abline(h = c(8), lty = 3)
+title(main = "C.", adj = 0)
+
+```
+
+### Optimal EI parameterization
+
+```{r}
+#| echo: false
+#| 
+
+ei_dir <- "~/uomShare/wergStaff/ChrisW/git-data/mw_metabarcoding_model/trial2_218spp_ei_opt/"
+ei_mods <- dir(ei_dir)[dir(ei_dir) != "logs"]
+loo_list <- list()
+for(i in 1:length(ei_mods)) {
+  if(length(grep("rds", dir(paste0(ei_dir, ei_mods[i])))) == 1){
+  loo_list <- c(loo_list,
+                list(readRDS(paste0(ei_dir,ei_mods[i],"/",
+                     ei_mods[i], "model_bundle.rds"))$loo))
+  names(loo_list)[length(loo_list)] <- ei_mods[i]
+  }
+  }
+# save(loo_list, file = "~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_ei.rda")
+load("~/uomShare/wergStaff/ChrisW/temp/loo_list_opt_ei.rda")
+
+n_way_comparison <- loo::loo_compare(loo_list)
+n_way_comparison <- data.frame(model = row.names(n_way_comparison), n_way_comparison, row.names = NULL)
+n_way_comparison$diff_by_se <- n_way_comparison$elpd_diff/n_way_comparison$se_diff
+n_way_comparison$diff_by_se[1] <- 0
+n_way_comparison$perc_bad_pareto_k <- NA
+for(i in 1:nrow(n_way_comparison)){
+  looi <- loo_list[[i]]
+  looi_ks <- looi$diagnostics$pareto_k
+  n_way_comparison$perc_bad_pareto_k[i] <- 100*sum(looi_ks > 0.7)/length(looi_ks)
+}
+n_way_comparison$looic_diff <- n_way_comparison$looic - n_way_comparison$looic[1]
+
+ei_vars <- strsplit(n_way_comparison$model,"_")
+ei_Ls <- as.numeric(gsub("L","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",2))))
+ei_Ls <- append(ei_Ls, Inf, after = which(n_way_comparison$model == "ti") - 1)
+ei_sWs <- as.numeric(gsub("sW","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",3))))
+ei_sWs <- append(ei_sWs, Inf, after = which(n_way_comparison$model == "ti") - 1)
+ei_Ws <- as.numeric(gsub("W","",unlist(lapply(ei_vars[ei_vars != "ti"],"[[",4))))
+ei_Ws <- append(ei_Ws, Inf, after = which(n_way_comparison$model == "ti") - 1)
+n_way_comparison$L <- ei_Ls
+n_way_comparison$sW <- ei_sWs
+n_way_comparison$W <- ei_Ws
+
+Ls <- unique(n_way_comparison$L[n_way_comparison$L != Inf]); Ls <- Ls[order(Ls)]; 
+sWs <- unique(n_way_comparison$sW[n_way_comparison$sW != Inf]); sWs <- sWs[order(sWs)]; 
+
+# write.csv(n_way_comparison, file = "temp/ei_multi_taxon_loo_comparison.csv")
+
+```
+
+```{r}
+#| label: fig-ei_elpds
+#| fig-width: 7
+#| fig-height: 4
+#| message: false
+#| fig-cap: "A. contour plot of difference in LOO-IC from the best model ($\delta$LOO-IC), as a function of L and sW (distance along small, unsampleable streams) with W = Inf (i.e. no attenuation along large streams). The three filled points indicate variants for which $\delta$LOO-IC < 4, and match the three points at x = Infinity in B. The optimal variant was L = 1, sW = 4. B. $\delta$LOO-IC for two ot the optimal combinations of L and sW with varying W.  The optimal value of W is Infinity."
+
+n_way_comparison <- read.csv("temp/ei_multi_taxon_loo_comparison.csv", row.names = 1)
+
+Ls <- unique(n_way_comparison$L[n_way_comparison$L != Inf]); Ls <- Ls[order(Ls)]; 
+sWs <- unique(n_way_comparison$sW[n_way_comparison$sW != Inf]); sWs <- sWs[order(sWs)];
+
+elpd_mat <- matrix(nrow = length(Ls), ncol = length(sWs))
+for(i in 1:length(Ls)){
+  for(j in 1:length(sWs)){
+    if(sum(n_way_comparison$L == Ls[i] & n_way_comparison$sW == sWs[j]) > 0)
+      elpd_mat[i,j] <- n_way_comparison$looic_diff[n_way_comparison$L == Ls[i] & 
+                                                     n_way_comparison$sW == sWs[j] & 
+                                                     n_way_comparison$W == Inf]
+  }
+}
+
+par(mfrow = c(1,2), mar = c(4,4,1,0))
+contour(log(sWs), log(Ls + 1), t(elpd_mat), ylab = "L (m)", 
+        xlim = log(c(2,100)),
+        xlab = "sW (m)", axes = FALSE, levels = c(5,10,20,40,80,120))
+points(log(4),log(1+1), pch = 24, bg = "lightblue")
+points(log(8),log(2+1), pch = 21, bg = "grey")
+points(log(16),log(4+1), pch = 25, bg = "red")
+xticks <- c(4,8,16,32,64,96,182,264,512)
+axis(2, at = log(c(0,1,2,4,8,16,32,64) + 1), labels = c(0,1,2,4,8,16,32,64), las = 1, cex.axis = 0.8); 
+axis(1, at = log(xticks), labels = xticks, las = 1, cex.axis = 0.8) ; box(bty = "l")
+title(main = "A.", adj = 0)
+
+Ws_16 <- n_way_comparison[grep("ei_L4_sW16_",n_way_comparison$model),]
+Ws_8 <- n_way_comparison[grep("ei_L2_sW8_",n_way_comparison$model),]
+Ws_1 <- n_way_comparison[grep("ei_L1_sW4_",n_way_comparison$model),]
+Ws_1 <- Ws_1[Ws_1$W != "4800",]  # unnecessary out of order point
+# # Adjust Ws_16 so that the delta loo_ics are anchored on (the more optimal Ws_1)
+Ws_16$looic_diff <- Ws_16$looic_diff + (Ws_16$looic[1] - Ws_1$looic[1])
+
+plot(log(Ws_16$W[Ws_16$W != Inf]), Ws_16$looic_diff[Ws_16$W != Inf], type = "b", 
+     xlim = log(c(200,1e5)), ylim = c(0,600), axes = FALSE, xlab = "W (km)", 
+     ylab = expression(Delta * " LOO-IC"), pch = 21, bg = "red")
+lines(log(Ws_1$W[Ws_1$W != Inf]), Ws_1$looic_diff[Ws_1$W != Inf], type = "b",
+      pch = 21, bg = "lightblue")
+points(log(1e5),  Ws_16$looic_diff[Ws_16$W == Inf], pch = 24, bg = "red")
+points(log(1e5),  Ws_1$looic_diff[Ws_1$W == Inf], pch = 25, bg = "lightblue")
+points(log(1e5),  Ws_8$looic_diff, pch = 21, bg = "grey")
+axis(1, at = log(c(400,1600,6400,25600,1e5)), 
+     labels = c(c(0.4,1.6,6.4,25.6,Inf)), cex.axis = 0.8)
+axis(2, las = 1, cex.axis = 0.8); box(bty="l")
+legend("topright", pch = 21, pt.bg = c("lightblue", "red","grey"),
+       legend = c("L 1 m, sW 4 m", "L 4 m, sW 16 m","L 2 m sW 8 m"), cex = 0.75)
+title(main = "B.", adj = 0)
+
+# ei_vars <- readRDS("~/uomShare/wergStaff/ChrisW/git-data/mwstr/impervious/sites_ei_sW_W_vars.rds")
+# min(cor(ei_vars[c("ei_L2_sW8_WInf","ei_L2_sW16_WInf","ei_L2_sW32_WInf","ei_L1_sW8_WInf",
+#                   "ei_L1_sW16_WInf","ei_L1_sW32_WInf","ei_L8_sW8_WInf","ei_L8_sW16_WInf",
+#                   "ei_L8_sW32_WInf","ei_L4_sW8_WInf","ei_L4_sW16_WInf","ei_L4_sW32_WInf")]))
+# # 0.9998626.  
+```
+
+Macroinvertebrate distributions were optimally predicted with low values of L and sW, indicating strong attenuation of stormwater impacts with overland flow, and along small ephemral upland streams. The optimal variant was L = 1m and sW = 4, but L = 2 m, sW = 8 m and L = 14 m, sW = 16 m were similarly plausible, producing a narrow corridor of plausibility from L = 1 to L = 4, with sW 4 times longer than L. This makes mechanistic sense in that the larger hydraulic load on small streams where water flows accumulate reduces retention capacity.
+
+I did not conduct a full gridded assessment of the potential for attenuation along large streams (W). Instead, I compared variants of two of the optimal combinations of L and sW (L1,sW4; L4,sW16) with varying W values. The best model had an infinite W value, and lesser values of W were increasingly less plausible (@ei_elpds B). This is consistent with Walsh and Kunapo: no evidence of downstream attenuation of stormwater impacts along large streams. This dataset provides stronger inference of no instream attenuation than the set used by Walsh and Kunapo. Their dataset was restricted to eastern Melbourne, but ours includes western Melbourne where several urban areas drain to rural land downstream (e.g. Sunbury, Werribee, Wallan).
+
+Walsh and Kunapo's optimal L of 9 m, by weighting by distance to the nearest stormwater drain, confounded the probability that a surface was connected to a drain with the attenuation distance for surfaces that were not connected. They also used a map that did not distinguish overland flow from flow along gullies. In our new conception, all surfaces in areas serviced by stormwater drains are assumed to be connected (and thus L = 0), and flow paths from unconnected surfaces flow first along land (dL), and potentially along small gullies (dsW), if the L path doesn't flow directly to a larger stream.
+
+The longer optimal L = 9 of Walsh and Kunapo falls between the L 1 and sW16, which suggests successful distinguishing of these two separate effects. L = 1 for unconnected surfaces, such as house draining to a garden or a road draining to surrounding land, is close to the binary conception that surfaces without formal drainage connection have little or no effect on stream ecosystems (e.g. Hatt et al. 2004; Walsh 2004). This therefore suggests that an adequate approximation of EI may be achieved by giving all impervious surfaces in areas serviced by stormwater drains a weighting of 1, and all others zero.
+
+The longer sW is consistent with the potential for reduction of stormwater runoff effects along swales and other stormwater control measures. The uncertainty in our estimate of sW could be because of unmeasured variability in the condition of small streams in the region. Without erosion, flow along small streams is likely to be dominated by hyporheic flow paths (small stream literature) providing strong attenuation of both physical and chemical impacts of stormwater runoff. Gullies that are eroded to clay or bedrock are likely to provide much reduced attenuation of effect.
