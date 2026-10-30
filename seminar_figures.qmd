@@ -533,7 +533,7 @@ p <- ggplot(
 ) +
   geom_contour(
     aes(colour = after_stat(level)),
-    bins = 12,
+    breaks = seq(from = 0, to = 152, by = 8),
     linewidth = 0.9
   ) +
   scale_colour_viridis_c(
@@ -578,16 +578,27 @@ p <- ggplot(
   ) + 
   geom_text_contour(
     aes(z = looic_diff),
-    bins = 12,
+    breaks = seq(from = 0, to = 152, by = 8),
     size = 3.5,
     stroke = 0.2,
     colour = "grey15"
   )
 
 p 
+
+# Write to file:
+ggsave(
+  filename = "seminar_figures/AF_full_contour.png",
+  plot = p,
+  width = 6,
+  height = 6,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
 ```
 
-You can add options to executable code like this
+
 
 ```{r}
 #| label: af_pruned_contour
@@ -600,24 +611,23 @@ library(metR)
 
 af_loo_table <- readRDS(file = "temp/af_loo_table.rds")
 
-af_loo_full <- af_loo_table[af_loo_table$map == "full" & !is.na(af_loo_table$L),]
-
-# Remove L = 3.75 row:
-af_loo_full <- af_loo_full[af_loo_full$L != 3.75,]
-
-# Remove W = 625 and 633:
-af_loo_full <- af_loo_full[!(af_loo_full$W %in% c(625, 633)),]
+af_loo_pruned <- af_loo_table[af_loo_table$map == "pruned" & !is.na(af_loo_table$L),]
 
 # Find the best point:
-best_af <- af_loo_full[which.min(af_loo_full$looic_diff),]
+best_af <- af_loo_pruned[which.min(af_loo_pruned$looic_diff),]
+
+min_looic <- round(min(af_loo_pruned$looic_diff))
+max_looic <- round(max(af_loo_pruned$looic_diff[af_loo_pruned$L < 17]))
+
+breaks <- c(min_looic, seq(min_looic+8, max_looic, by = 10))
 
 p <- ggplot(
-  af_loo_full,
+  af_loo_pruned,
   aes(x = L, y = W, z = looic_diff)
 ) +
   geom_contour(
     aes(colour = after_stat(level)),
-    bins = 12,
+    breaks = breaks,
     linewidth = 0.9
   ) +
   scale_colour_viridis_c(
@@ -630,6 +640,7 @@ p <- ggplot(
     y = "In-stream HDD (km)"
   ) +
   theme_minimal(base_size = 16) +
+  coord_cartesian(xlim = c(0, 10)) + 
   theme(
     panel.grid.minor = element_blank(),
     panel.grid.major = element_line(
@@ -662,7 +673,7 @@ p <- ggplot(
   ) + 
   geom_text_contour(
     aes(z = looic_diff),
-    bins = 12,
+    breaks = breaks,
     size = 3.5,
     stroke = 0.2,
     colour = "grey15"
@@ -670,18 +681,219 @@ p <- ggplot(
 
 p 
 
+ggsave(
+  filename = "seminar_figures/AF_pruned_contour.png",
+  plot = p,
+  width = 6,
+  height = 6,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+
+)
+
 ```
+
 
 ```{r}
-#| label: af_looic_w
-
+#| label: af_combined
+#| fig-width: 6
+#| fig-height: 6
 
 
 ```
+
+
+### EI figures:
 
 ```{r}
-#| label: af_looic_l
+#| label: ei_contour
+#| fig-width: 6
+#| fig-height: 6
 
+library(ggplot2)
+library(viridis)
+library(metR)
 
+ei_loo_table <- read.csv(file = "temp/ei_multi_taxon_loo_comparison.csv")
+
+ei_L_sW <- ei_loo_table[ei_loo_table$W == Inf & ei_loo_table$L != Inf & ei_loo_table$sW != Inf,]
+
+# Find the best point:
+best_ei <- ei_L_sW[which.min(ei_L_sW$looic_diff),]
+
+breaks <- c(8, seq(20, 160, by = 20))
+
+p <- ggplot(
+  ei_L_sW,
+  aes(x = L, y = sW, z = looic_diff)
+) +
+  geom_contour(
+    aes(colour = after_stat(level)),
+    breaks = breaks,
+    linewidth = 0.9
+  ) +
+  # Log-transform x-axis:
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_colour_viridis_c(
+    option = "C",
+    direction = -1,
+    name = expression(Delta * "LOOIC")
+  ) +
+  labs(
+    x = "Overland HDD (m)",
+    y = "In-stream HDD (km)"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(
+      colour = "grey90",
+      linewidth = 0.35
+    ),
+    axis.title = element_text(
+      face = "bold",
+      colour = "grey20"
+    ),
+    axis.text = element_text(
+      colour = "grey25"
+    ),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right",
+    plot.background = element_rect(
+      fill = "white",
+      colour = NA
+    )
+  ) +
+  geom_point(
+    data = best_ei,
+    aes(x = L, y = sW),
+    inherit.aes = FALSE,
+    shape = 21,
+    size = 4,
+    stroke = 1.2,
+    fill = "white",
+    colour = "black"
+  ) + 
+  geom_text_contour(
+    aes(z = looic_diff),
+    breaks = breaks,
+    size = 3.5,
+    stroke = 0.2,
+    colour = "grey15"
+  )
+
+p 
+
+# Write to file:
+ggsave(
+  filename = "seminar_figures/EI_full_contour.png",
+  plot = p,
+  width = 6,
+  height = 6,
+  units = "in",
+  dpi = 300,
+  bg = "white"
+)
 
 ```
+
+
+### Maps
+
+```{r}
+#| label: fig-full_vs_sampleable_map
+#| echo: false
+#| warning: false
+#| message: false
+#| fig-width: 8
+#| fig-height: 8
+#| fig-cap: "Sampling locations for the 132 sites (indicated by points) across Naarm/Greater Melbourne (Victoria, Australia).  Lines indicate mapped stream reaches retrieved from the Melbourne Water Stream network database (Walsh, 2023). Streams are shaded to indicate that a stream reach is sampleable (grey) or non-sampleable (blue). Spatial data from sampleable streams were compiled separately from the full network to permit comparison with previous studies that used similar spatial mapping, refered to as the 'pruned' network throughout this study."
+
+# ssh -L 5432:localhost:5432 -C -N -l  tewilkins 172.26.150.60
+# Download required databases (mwbugs and mwstr) to local directory (local_dir):
+# if (!dir.exists("gpkg")) dir.create("gpkg") # Safely creates a new folder if it doesn't already exist
+# urls <- c("https://tools.thewerg.unimelb.edu.au/mwbugs/data/mwbugs_db_v2.1.1.gpkg", # 50.7MB
+#           "https://tools.thewerg.unimelb.edu.au/mwstr/data/mwstr_v1.3.1.gpkg")      # 780.0MB
+# options(timeout = 900) # Increases time to download files through R - default timeout is 60 seconds.
+# for (url in urls){
+#   if (!file.exists(paste0("gpkg/", basename(url)))){
+#     print(paste("Downloading", basename(url)))
+#     download.file(
+#       url, 
+#       destfile = paste0("gpkg/", basename(url)), # file path where the downloaded file is to be saved.
+#       mode = "wb") # Code written to download binary files must use mode = "wb" (or "ab")
+#   }
+# }
+# 
+# 
+# # Connect to MW databases:
+# mwstr <- DBI::dbConnect(RSQLite::SQLite(), dbname = "gpkg/mwstr_v1.3.1.gpkg")
+
+library(ggspatial)
+
+mwstr <- DBI::dbConnect(RPostgres::Postgres(),dbname = "mwstr",
+                          host = "localhost", user = "readonly", password = "reachcode_42")
+
+streams <- sf::st_read(mwstr, query = "SELECT * FROM streams;")
+coast <- sf::st_read(mwstr, query = "SELECT * FROM coast;")
+
+model_data <- rio::import_list("~/uomShare/wergStaff/tewilkins/git-data/env_optimisation/data/biota_sampprs_for_optimisation.xlsx")
+# list2env(model_data, globalenv())
+sampprs <- model_data$sampprs
+
+stream_data_wgs84 <- sf::st_transform(streams$geom, crs = 4326)
+coast_data_wgs84 <- sf::st_transform(coast$geom, crs = 4326)
+stream_coord <- sf::st_coordinates(stream_data_wgs84)
+site_points <- data.frame(X = sampprs$coord_X,
+                          Y = sampprs$coord_Y,
+                          dupe = as.integer(duplicated(sampprs$coord_X)))
+
+streams$sampleable[streams$sampleable == 0] <- "Non-sampleable"
+streams$sampleable[streams$sampleable == 1] <- "Sampleable"
+
+# streams$sampleable <- factor(streams$sampleable, levels = c("Non-sampleable", "Sampleable"))
+
+# Sort streams dataframe by sampleable status (non-sampleable first):
+#streams <- streams[order(streams$sampleable),]
+
+# Reorder stream_data_wgs84 to match sorted order in streams:
+#stream_data_wgs84 <- stream_data_wgs84[match(streams$geom, stream_data_wgs84$geom),]
+
+ggplot() +
+  geom_sf(data = stream_data_wgs84, aes(color = streams$sampleable), fill = NA) +
+  scale_color_manual(values = c("powderblue","grey50"), name = "Stream network\nmapping region") + 
+  geom_sf(data = coast_data_wgs84, fill = NA) +
+  #geom_point(data = site_points, aes(x = X, y = Y), pch = 19, size = 1) +
+  annotation_scale(location = "bl", width_hint = 0.5) +
+  annotation_north_arrow(location = "bl", which_north = "true", pad_x = unit(0.75, "in"), 
+                         pad_y = unit(0.25, "in"), 
+                         style = north_arrow_fancy_orienteering) +
+  coord_sf(xlim = c(min(stream_coord[,1]) - diff(range(stream_coord[,1])) * 0.1, 
+                    max(stream_coord[,1]) + diff(range(stream_coord[,1])) * 0.01), 
+           ylim = c(min(stream_coord[,2]) - diff(range(stream_coord[,1])) * 0.1, 
+                    max(stream_coord[,2]) + diff(range(stream_coord[,1])) * 0.01), 
+           expand = FALSE) +
+   xlab("Longitude") + ylab("Latitude") + 
+  theme(panel.background = element_rect(fill = "white", color = NA),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.border = element_rect(colour = "black", fill=NA, size=1))
+
+
+
+DBI::dbDisconnect(mwstr)
+
+ggsave(
+  filename = "seminar_figures/full_vs_sampleable_map.png",
+  width = 8,
+  height = 8,
+  units = "in",
+  dpi = 300,
+  bg = "white")
+
+```
+
+
+
+
